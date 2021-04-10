@@ -13,6 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_srvs
   trajectory_msgs
+  tf2
+  tf2_ros
 )
 
 ## System dependencies are found with CMake's conventions
@@ -142,6 +144,14 @@ include_directories(
 add_executable(first_executable src/first_executable.cpp)
 add_dependencies(first_executable ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(first_executable ${catkin_LIBRARIES})
+
+add_executable(TaskManager src/TaskManager.cpp)
+add_dependencies(TaskManager ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(TaskManager ${catkin_LIBRARIES})
+
+add_executable(kittingRobot src/kittingRobot.cpp)
+add_dependencies(kittingRobot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(kittingRobot ${catkin_LIBRARIES})
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
