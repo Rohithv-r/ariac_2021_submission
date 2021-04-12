@@ -1,0 +1,15 @@
+<launch>
+    <!-- <group ns='ariac/kitting'>
+        <include file="$(find kitting_moveit_config)/launch/moveit_rviz.launch">
+            <arg name="rviz_config" value="$(find kitting_moveit_config)/launch/moveit.rviz"/>
+        </include>
+    </group> -->
+    <group ns='ariac/kitting'>
+        <node name="kittingRobot" pkg="ariac_2021_submission" type="kittingRobot" output="screen">
+            <!-- <remap from="joint_states" to="ariac/kitting/joint_states" />
+            <remap from="follow_joint_trajectory" to="ariac/kitting/kitting_arm_controller/follow_joint_trajectory" /> -->
+            <!-- <remap from="robot_description" to="ariac/kitting/robot_description" /> -->
+        </node>
+    </group>
+    <node name="rviz_kitting" pkg="rviz" type="rviz" />
+</launch>

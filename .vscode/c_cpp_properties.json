@@ -1,0 +1,23 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "",
+        "limitSymbolsToIncludedHeaders": true
+      },
+      "includePath": [
+        "/home/rohith/ARIAC_WS/devel/include/**",
+        "/opt/ros/melodic/include/**",
+        "/home/rohith/ARIAC_WS/src/ariac_2021_submission/include/**",
+        "/home/rohith/ARIAC_WS/src/ariac-gazebo_ros_pkgs/gazebo_plugins/include/**",
+        "/home/rohith/ARIAC_WS/src/ariac-gazebo_ros_pkgs/gazebo_ros/include/**",
+        "/home/rohith/ARIAC_WS/src/ariac-gazebo_ros_pkgs/gazebo_ros_control/include/**",
+        "/home/rohith/ARIAC_WS/src/ARIAC/nist_gear/include/**",
+        "/home/rohith/ARIAC_WS/src/summa/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS"
+    }
+  ],
+  "version": 4
+}
