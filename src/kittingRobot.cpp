@@ -7,4 +7,6 @@ int main(int argc, char** argv) {
     spinner.start();
     std::cout << "LET's DO THIS!" << std::endl;
     kittingRobot kittingRobotInstance(node);
+    std::cout << "Exited kittingRobotInstance" << std::endl;
+    
 }

@@ -11,5 +11,5 @@
             <!-- <remap from="robot_description" to="ariac/kitting/robot_description" /> -->
         </node>
     </group>
-    <node name="rviz_kitting" pkg="rviz" type="rviz" />
+    <!-- <node name="rviz_kitting" pkg="rviz" type="rviz" /> -->
 </launch>
