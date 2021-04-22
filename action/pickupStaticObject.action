@@ -1,0 +1,10 @@
+# Goal
+string ID
+geometry_msgs/Pose initial_pose
+geometry_msgs/Pose final_pose
+string supporting_surface
+---
+# Result
+bool success
+---
+float64 feedback

@@ -12,15 +12,18 @@
 #include <nist_gear/Product.h>
 
 #include <tf2_ros/transform_listener.h>
-// #include <tf/transform_listener.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Pose.h>
-// #include <tf2/buffer_core.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-// #include <tf/transform_datatypes.h>
+
+#include <actionlib/client/simple_action_client.h>
+#include <actionlib/client/terminal_state.h>
+#include <ariac_2021_submission/addPlanningSceneCollision.h>
+#include <ariac_2021_submission/pickupStaticObjectAction.h>
 
 tf2_ros::Buffer tfBuffer;
 boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
+ros::ServiceClient addPlanningSceneCollisionKittingClient;
 
 void start_competition(const ros::NodeHandlePtr& node) {
     // Create a Service client for the correct service, i.e. '/ariac/start_competition'.
@@ -77,7 +80,8 @@ nist_gear::Model getModelFromProduct(nist_gear::Product p) {
 struct availablePart{
   
     std::string type;
-    std::string frame_id;
+    std::string type_id;
+    bool req_for_kitting;
     bool moving;
     bool conveyor;
     geometry_msgs::PoseStamped pose;
@@ -89,8 +93,8 @@ struct availablePart{
     availablePart() {
       lastPoseUpdateTime = ros::Time::now();
     }
-    availablePart(std::string in_type,geometry_msgs::PoseStamped in_pose) 
-      : type(in_type), pose(in_pose) {
+    availablePart(std::string in_type, std::string ID, geometry_msgs::PoseStamped in_pose) 
+      : type(in_type), type_id(ID), pose(in_pose) {
 
         lastPoseUpdateTime = ros::Time::now();      
     }
@@ -109,6 +113,7 @@ void availablePart::estimateAndUpdateTransform(){
     if (conveyor){
       ros::Duration diff = ros::Time::now() - lastPoseUpdateTime;
       pose.pose.position.y -= conveyorVel*(diff.sec+diff.nsec*pow(10,-9));
+      lastPoseUpdateTime = ros::Time::now();
     }
 }
 
@@ -129,9 +134,20 @@ class availablePartsManager{
     int getTypeIdPrev(std::string type);
     std::vector<availablePart> getAvailableParts() { return availableParts;}
     bool addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame);
-
+    void updateKittableParts(std::vector<std::string>);
+    availablePart getStaticKittablePart();
+    std::vector<availablePart> getStaticKittableParts();
 };
 
+
+void availablePartsManager::updateKittableParts(std::vector<std::string> requiredTypes){
+    for (auto i : availableParts){
+      if (std::find(requiredTypes.begin(), requiredTypes.end(), i.getType()) != requiredTypes.end())
+        i.req_for_kitting = true;
+      else
+        i.req_for_kitting = false;
+    }
+}
 
 int availablePartsManager::getTypeCount(std::string type){
     std::map<std::string,int>::iterator it = type_count.find(type);
@@ -149,6 +165,22 @@ int availablePartsManager::getTypeIdPrev(std::string type){
     }
     else
       return 0;
+}
+
+availablePart availablePartsManager::getStaticKittablePart(){
+    for (auto i : availableParts){
+      if (i.req_for_kitting && !i.conveyor)
+        return i;
+    }
+}
+
+std::vector<availablePart> availablePartsManager::getStaticKittableParts(){
+    std::vector<availablePart> parts;
+    for (auto i : availableParts){
+      if (i.req_for_kitting && !i.conveyor)
+        parts.push_back(i);
+    }
+    return parts;
 }
 
 void availablePartsManager::updateTransforms() {
@@ -170,12 +202,12 @@ void availablePartsManager::addTypeCount(std::string type, int count=1){
 void availablePartsManager::addTypeIdPrev(std::string type, int id=1){
   // When a part is added, a new frame_id is assigned as per the ID of the map for the 
   // appropriate type. type count can be 2, but id can be >=2 depending on prev objects removed
-    std::map<std::string,int>::iterator it = type_count.find(type);
-    if (it != type_count.end()){
+    std::map<std::string,int>::iterator it = type_id_prev.find(type);
+    if (it != type_id_prev.end()){
       it->second += id;
     }
     else
-      it->second = id;
+      type_id_prev.insert(std::pair<std::string,int>(type,0));
 }
 
 bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame){
@@ -202,8 +234,20 @@ bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::st
       }
     }
     // If it exits the above block without returning, it means object is new and must be added
-    availableParts.push_back(availablePart(m.type,world_pose));
+    std::string id = m.type + std::to_string(getTypeIdPrev(m.type) + 1);
+    availableParts.push_back(availablePart(m.type, id, world_pose));
     addTypeCount(m.type);
+    addTypeIdPrev(m.type);
+    /*ariac_2021_submission::addPlanningSceneCollision collision;
+    collision.request.CollisionPose = world_pose.pose;
+    collision.request.Dimensions = {0.12, 0.12, 0.05};  // Rough dimensions for now. Not sure if obj specific dimensions are necessary
+    collision.request.ID = m.type + std::to_string(getTypeIdPrev(m.type) + 1);
+    if(!addPlanningSceneCollisionKittingClient.call(collision)){
+      ROS_ERROR_STREAM(id << " not added to planning collision scene!\n");
+    }
+    else
+      std::cout << id << " added successfully by calling the service!" << std::endl;*/
+      
     // std::cout << getTypeCount(m.type) << std::endl;
     return true;
     
@@ -278,32 +322,170 @@ void availableProducts::addProductFromLogicalCam(nist_gear::Model m, std::string
 }
 */
 
+
+// --------------------------------- KITTING CLASS -----------------------------------
+
+struct kittingProduct{
+    nist_gear::Product product;
+    bool required;
+    kittingProduct(nist_gear::Product p, bool r) : product(p), required(r) { }
+};
+
 class kittingTask{
   public:
     // kittingTask(const nist_gear::KittingShipment& ks) : shipment(ks) { }
     kittingTask(const nist_gear::KittingShipment& ks) 
-      : shipment_type(ks.shipment_type), agv_id(ks.agv_id), station_id(ks.station_id),
-        products(ks.products) {  }
+      : shipment_type(ks.shipment_type), agv_id(ks.agv_id), station_id(ks.station_id){
+        if (agv_id.size() > 0)
+          kit_id = int(agv_id[agv_id.size()-1] - '0');
+        for (auto i : ks.products){
+          kitting_products.push_back(kittingProduct(i,true));
+          // products.insert(std::pair<nist_gear::Product, bool>(i, true));
+        }
+    }
+    // kit_tray_1, etc
+    geometry_msgs::Pose getProductDestinationPose(std::string type); // Always call after verifying availability
+    geometry_msgs::Pose getProductDestinationPose();
+    int getReqTypeCount(std::string type);
+    int getReqCount();
+    std::vector<std::string> getRequiredProductTypes();
   private:
     // nist_gear::KittingShipment shipment;
     std::string shipment_type, agv_id, station_id;
-    std::vector<nist_gear::Product> products;
+    int kit_id;
+    std::vector<kittingProduct> kitting_products;
+    // std::map<nist_gear::Product, bool> products; // product, and if it is required
 };
+
+std::vector<std::string> kittingTask::getRequiredProductTypes(){
+    std::vector<std::string> product_types;
+    for (auto i : kitting_products){
+      if (i.required)
+        product_types.push_back(i.product.type);
+    }
+    return product_types;
+}
+
+int kittingTask::getReqCount(){
+    int count = 0;
+    for (auto i : kitting_products){
+      if (i.required)
+        count++;
+    }
+    return count;
+}
+
+geometry_msgs::Pose kittingTask::getProductDestinationPose(std::string product_type){
+    std::vector<kittingProduct>::iterator it = kitting_products.begin();
+    // geometry_msgs::Pose world_pose;
+    // For multiple products of same type, use line below, and it++
+    // while ( (std::find_if(it, products.end(), [product_type] (std::pair<nist_gear::Product, bool> p) { return p.first.type == product_type; })) != products.end()){
+    if ( (it = std::find_if(kitting_products.begin(), kitting_products.end(), [product_type] (kittingProduct p) { return ( (p.product.type == product_type) && p.required); })) != kitting_products.end()){
+      geometry_msgs::PoseStamped t;
+      t.header.frame_id = "kit_tray_" + std::to_string(kit_id);
+      std::cout << "Using kit_id : " << t.header.frame_id << ", agv id : " << agv_id << std::endl;
+      t.pose = it->product.pose;
+      return tfBuffer.transform(t, "world").pose;
+    }
+    else{
+      ROS_ERROR_STREAM("Requested product type not required for kitting!");
+      return geometry_msgs::Pose();
+    }
+}
+
+geometry_msgs::Pose kittingTask::getProductDestinationPose(){
+    std::vector<kittingProduct>::iterator it = kitting_products.begin();
+    if (kitting_products.size() > 0){
+      geometry_msgs::PoseStamped t;
+      t.header.frame_id = "kit_tray_" + std::to_string(kit_id);
+      std::cout << "Using kit_id : " << t.header.frame_id << ", agv id : " << agv_id << std::endl;
+      t.pose = kitting_products[0].product.pose;
+      return tfBuffer.transform(t, "world").pose;
+    }
+    else
+      ROS_ERROR_STREAM("Kitting required products are empty at the moment!");
+}
+
+int kittingTask::getReqTypeCount(std::string product_type){
+    std::vector<kittingProduct>::iterator it = kitting_products.begin();
+    int count = 0;
+    while ( (std::find_if(it, kitting_products.end(), [product_type] (kittingProduct p) { return ( (p.product.type == product_type) && p.required); })) != kitting_products.end()){
+      it++;
+      count++;
+    }
+    return count;
+}
+
+
+
+
+// ----------------------------- JOB CLASS ------------------------------------------
+
+class enumClass{
+  public:
+    enum ROBOT{
+        kitting, assembly
+    };
+
+    enum TASK{
+        pick_and_place, assembly, part_reorientation
+    };
+};
+
+class job{
+  // A job object contains availablePart, assigned robot, etc. 
+  // Used to perform kitting/assembly/part_reorientation by calling services.
+  private:
+    availablePart part;
+    enumClass::ROBOT robot;
+    enumClass::TASK task;
+    
+  public:
+    job() { }
+    job(availablePart p, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
+      enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t) { }
+    void perform();
+    bool isPerforming();
+    
+};
+
+
+
+
+
+
+
+
+// --------------------------------- TASKMANAGER CLASS ---------------------------------------
 
 class TaskManager{
   public:
     TaskManager(ros::NodeHandlePtr& nh) : _nh(nh) {
         tfListenerPtr = boost::make_shared<tf2_ros::TransformListener>(tfBuffer);
+        addPlanningSceneCollisionKittingClient = _nh->serviceClient<ariac_2021_submission::addPlanningSceneCollision>("ariac/kitting/add_kitting_planning_scene_collision");
+        addPlanningSceneCollisionKittingClient.waitForExistence(ros::Duration(10));
         order_sub = _nh->subscribe("ariac/orders", 4, &TaskManager::orderCallback, this);
         lc_conveyor_sub = _nh->subscribe("/ariac/logical_camera_conveyor", 10, &TaskManager::lcConveyorCallback, this);
         // lc_1_2_sub = _nh->subscribe("/ariac/logical_camera_1_2", 3, &TaskManager::lc12Callback, this);
         // lc_3_4_sub = _nh->subscribe("/ariac/logical_camera_3_4", 3, &TaskManager::lc34Callback, this);
-        lc_1_2 = _nh->createTimer(ros::Duration(5), &TaskManager::lc_1_2_timer_callback, this);
-        lc_3_4 = _nh->createTimer(ros::Duration(5), &TaskManager::lc_3_4_timer_callback, this);
+        lc_1_2 = _nh->createTimer(ros::Duration(2), &TaskManager::lc_1_2_timer_callback, this);
+        lc_3_4 = _nh->createTimer(ros::Duration(2), &TaskManager::lc_3_4_timer_callback, this);
         while (!updateBinTransforms()){
           std::cout << "Unable to update bin transforms!" << std::endl;
         }
         start_competition(_nh);
+        pickupStaticObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>("ariac/kitting/pick_and_place_static_action");
+        pickupStaticObjectClient->waitForServer();
+        while (availablePartsManagerInstance.getAvailableParts().size() == 0){
+          std::cout << "No parts available yet" << std::endl;
+          ros::spinOnce();
+        }
+        ros::Rate rate(1);
+        while (_nh->ok()){
+          jobScheduler();
+          // ros::spinOnce(); // Need to test if fast subscriberCallbacks also get called without this.
+          rate.sleep();
+        }
     }
     
 
@@ -315,25 +497,101 @@ class TaskManager{
     // ros::Subscriber lc_3_4_sub;
     ros::Timer lc_1_2;
     ros::Timer lc_3_4;
-    void lc_1_2_timer_callback(const ros::TimerEvent& e);
-    void lc_3_4_timer_callback(const ros::TimerEvent& e);
-    std::vector<kittingTask> kittingTasks;
-    void orderCallback(const nist_gear::OrderConstPtr& orderMsg);
-    void lcConveyorCallback(const nist_gear::LogicalCameraImageConstPtr& msg);
-    boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_1_2;
-    boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_3_4;
-    bool isProductAvailable(std::vector<nist_gear::Model>::const_iterator i, std::vector<nist_gear::Product> _currentAvailableParts);
     availablePartsManager availablePartsManagerInstance;
+    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickupStaticObjectClient;
     // tf2_ros::Buffer tfBuffer;
     // boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
     std::vector<geometry_msgs::TransformStamped> bin_transforms;
+    std::vector<kittingTask> kittingTasks;
+    std::vector<job> pendingJobs;
+    job currentJob;
+    boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_1_2;
+    boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_3_4;
+    bool kittingPickAndPlaceInProgress = false;
+    void lc_1_2_timer_callback(const ros::TimerEvent& e);
+    void lc_3_4_timer_callback(const ros::TimerEvent& e);
+    void orderCallback(const nist_gear::OrderConstPtr& orderMsg);
+    void lcConveyorCallback(const nist_gear::LogicalCameraImageConstPtr& msg);
+    bool isProductAvailable(std::vector<nist_gear::Model>::const_iterator i, std::vector<nist_gear::Product> _currentAvailableParts);
     void printStaticTF();
     bool updateBinTransforms();
     int getPartBin(availablePart p);
-
+    void samplePickAndPlace();
+    void jobScheduler();
     // void lc12Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
     // void lc34Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
 };
+
+void TaskManager::jobScheduler(){
+    // Update
+    // samplePickAndPlace();
+
+    // first iter : 
+    // check required tasks. 
+    // assign jobs accordingly.
+    // If kitting 
+
+
+    
+    availablePartsManagerInstance.updateTransforms();
+    if (!kittingPickAndPlaceInProgress && (kittingTasks.size() == 1)){
+      if (kittingTasks[0].getReqCount() > 0){
+        availablePartsManagerInstance.updateKittableParts(kittingTasks[0].getRequiredProductTypes());
+        std::vector<availablePart> staticKittableParts = availablePartsManagerInstance.getStaticKittableParts();
+        // pendingJobs.clear();
+        // for (auto i : availablePartsManagerInstance.getStaticKittableParts())
+        //   pendingJobs.push_back(job(i));
+        //// Do something to get the most important job 
+        if (staticKittableParts.size() > 0){
+          currentJob = job(staticKittableParts[0], enumClass::kitting, enumClass::pick_and_place);
+          currentJob.perform();
+          kittingPickAndPlaceInProgress = true;
+        }
+        else
+          std::cout << "There are no static kittable parts currently present!" << std::endl;
+      }
+      else{
+        std::cout << "\033[1;34mKitting has been completed!\033[0m" << std::endl;
+      }
+    }
+
+    else{
+
+    }
+}
+
+void TaskManager::samplePickAndPlace(){
+    // pickupStaticObjectClient
+    std::cout << "Sample pick and place fn called" << std::endl;
+    ariac_2021_submission::pickupStaticObjectGoal goal;
+    if (kittingTasks.size() > 0)
+      availablePartsManagerInstance.updateKittableParts(kittingTasks[0].getRequiredProductTypes());
+    availablePart a = availablePartsManagerInstance.getAvailableParts()[0];
+    // while (availablePartsManagerInstance.getAvailableParts().size() == 0){
+    //   std::cout << "No parts available yet" << std::endl;
+    // }
+    // std::cout << "New part found! Picking and placing it!" << std::endl;
+    // if (availablePartsManagerInstance.getAvailableParts().size() > 0)
+    //   a = availablePartsManagerInstance.getAvailableParts()[0];
+    // else
+    //   ROS_ERROR_STREAM("No available parts to pick and place!");
+    goal.ID = a.type_id;
+    goal.supporting_surface = "bin" + std::to_string(getPartBin(a)) + "_center_collision";
+    goal.initial_pose = a.pose.pose;
+    goal.final_pose = kittingTasks[0].getProductDestinationPose();
+    if (kittingTasks.size() > 0){
+
+    }
+    pickupStaticObjectClient->sendGoal(goal);
+    pickupStaticObjectClient->waitForResult();
+    // while (!pickupStaticObjectClient->getResult()->success){
+    //   continue;
+    // }
+    std::cout << "Server side returned success = " << pickupStaticObjectClient->getResult()->success << std::endl;
+    if (pickupStaticObjectClient->getResult()->success)
+      std::cout << "YAYYYYY" << std::endl;
+}
+
 
 bool TaskManager::updateBinTransforms(){
     geometry_msgs::TransformStamped transformStamped;

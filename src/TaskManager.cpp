@@ -6,18 +6,20 @@ int main(int argc, char **argv) {
     ros::init(argc, argv, "task_manager_node");
     ros::NodeHandlePtr node = boost::make_shared<ros::NodeHandle>(); // why is this wrong? Gotta figure out initialization
     // ros::NodeHandlePtr node(new ros::NodeHandle);
-    TaskManager tm(node);
-    // ros::spin();
     ros::AsyncSpinner spinner(1);
     spinner.start();
-    ros::Rate rate(10);
-    ros::Publisher pub = node->advertise<std_msgs::Bool>("summa_topic",2);
-    std_msgs::Bool b;
-    b.data = true;
-    tf2_ros::Buffer tfBuffer;
-    tf2_ros::TransformListener tfListener(tfBuffer);
-    geometry_msgs::TransformStamped transformStamped;
-    while (node->ok()){
+    TaskManager tm(node);
+    std::cout << "Quit Taskmanager object!" << std::endl;
+    ros::waitForShutdown();
+    // ros::spin();
+    // ros::Rate rate(10);
+    // ros::Publisher pub = node->advertise<std_msgs::Bool>("summa_topic",2);
+    // std_msgs::Bool b;
+    // b.data = true;
+    // tf2_ros::Buffer tfBuffer;
+    // tf2_ros::TransformListener tfListener(tfBuffer);
+    // geometry_msgs::TransformStamped transformStamped;
+    // while (node->ok()){
         // pub.publish(b);
         // b.data = !(b.data);
         // try{
@@ -31,8 +33,8 @@ int main(int argc, char **argv) {
         // }
         // std::cout << transformStamped. << std::endl;
 
-        rate.sleep();
-    }
+        // rate.sleep();
+    // }
     // ros::waitForShutdown();
 
 }

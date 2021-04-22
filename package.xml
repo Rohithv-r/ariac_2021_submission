@@ -15,5 +15,8 @@
   <depend>std_srvs</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>trajectory_msgs</depend>
+  <depend>actionlib_msgs</depend>
+  <depend>message_generation</depend>
+  <depend>message_runtime</depend>
 
 </package>

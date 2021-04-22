@@ -1,0 +1,6 @@
+string ID
+float64[] Dimensions
+geometry_msgs/Pose CollisionPose
+#int32 action        # 1 for ADD, 2 for REMOVE, 3 for MOVE
+---
+bool success

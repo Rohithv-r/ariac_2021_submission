@@ -36,10 +36,11 @@
           $(arg load_kitting_moveit_args)
           $(arg fill_demo_shipment_args)
           --visualize-sensor-views
-          -f $(find nist_gear)/config/trial_config/sample_kitting.yaml
-          $(find ariac_2021_submission)/config/my_gear_conf.yaml
+          -f /home/rohith/comp_config/kitting1.yaml
+          $(find nist_gear)/config/user_config/sample_user_config_misc.yaml.yaml
           " required="true" output="screen" />
 
+<!-- find ariac_2021_submission)/config/my_gear_conf.yaml -->
   <!-- <group ns='ariac/gantry'>
     <include file="$(find gantry_moveit_config)/launch/moveit_rviz.launch">
       <arg name="rviz_config" value="$(find gantry_moveit_config)/launch/moveit.rviz"/>

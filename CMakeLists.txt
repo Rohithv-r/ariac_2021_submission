@@ -19,6 +19,8 @@ find_package(catkin REQUIRED COMPONENTS
   moveit_ros_planning
   moveit_ros_planning_interface
   moveit_visual_tools
+  message_generation
+  actionlib_msgs
 )
 
 find_package(Eigen3 REQUIRED)
@@ -57,31 +59,31 @@ find_package(Eigen3 REQUIRED)
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
-#   Message1.msg
-#   Message2.msg
-# )
+add_message_files(
+  FILES
+  
+)
 
 ## Generate services in the 'srv' folder
-# add_service_files(
-#   FILES
-#   Service1.srv
-#   Service2.srv
-# )
+add_service_files(
+  FILES
+  addPlanningSceneCollision.srv
+)
 
 ## Generate actions in the 'action' folder
-# add_action_files(
-#   FILES
-#   Action1.action
-#   Action2.action
-# )
+add_action_files(
+  DIRECTORY action
+  FILES
+  pickupStaticObject.action
+)
 
 ## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   std_msgs  # Or other packages containing msgs
-# )
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  nist_gear
+  actionlib_msgs
+)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -115,7 +117,7 @@ find_package(Eigen3 REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES summa
-# CATKIN_DEPENDS roscpp rospy
+  CATKIN_DEPENDS roscpp message_runtime actionlib_msgs
 #  DEPENDS system_lib
 )
 
@@ -157,7 +159,7 @@ add_dependencies(TaskManager ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORT
 target_link_libraries(TaskManager ${catkin_LIBRARIES})
 
 add_executable(kittingRobot src/kittingRobot.cpp)
-add_dependencies(kittingRobot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(kittingRobot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} ariac_2021_submission_generate_messages_cpp)
 target_link_libraries(kittingRobot ${catkin_LIBRARIES})
 
 ## Rename C++ executable without prefix
