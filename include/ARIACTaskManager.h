@@ -62,6 +62,26 @@ bool isPositionDiffLesser(geometry_msgs::Vector3 t1, geometry_msgs::Point t2, do
     return false;
 }
 
+static geometry_msgs::Vector3 rpyFromQuat(geometry_msgs::Quaternion quat){
+    // tf::Quaternion q(quat.x, quat.y, quat.z, quat.w);
+    tf2::Quaternion q1(quat.x, quat.y, quat.z, quat.w);
+
+    // tf::Matrix3x3 m(q);
+    tf2::Matrix3x3 m(q1);
+    geometry_msgs::Vector3 v;
+    m.getRPY(v.x, v.y, v.z);
+    return v;
+}
+
+static geometry_msgs::Quaternion quatFromRPY(double roll, double pitch, double yaw){
+    // tf::Quaternion quat;
+    tf2::Quaternion quat;
+    geometry_msgs::Quaternion q;
+    quat.setRPY(roll, pitch, yaw);
+    q.x = quat.x(); q.y = quat.y(); q.z = quat.z(); q.w = quat.w();
+    return q;
+}
+
 void copyPoseToTransform(geometry_msgs::Pose p, geometry_msgs::Transform& t){
     t.translation.x = p.position.x;
     t.translation.y = p.position.y;
@@ -77,13 +97,16 @@ nist_gear::Model getModelFromProduct(nist_gear::Product p) {
 }
 
 
+// ---------------------------- AVAILABLEPARTS ---------------------------------------------
+
+
 struct availablePart{
   
     std::string type;
     std::string type_id;
-    bool req_for_kitting;
-    bool moving;
-    bool conveyor;
+    bool req_for_kitting = false;
+    bool inAction = false;
+    // bool conveyor;
     geometry_msgs::PoseStamped pose;
     // geometry_msgs::TransformStamped estimated_pose;
     ros::Time lastPoseUpdateTime;
@@ -98,54 +121,92 @@ struct availablePart{
 
         lastPoseUpdateTime = ros::Time::now();      
     }
-    std::string getType() { return type; }
-    bool isMoving() { return moving; }
-    void setMoving(bool mv) { moving = mv; }
-    bool onConveyor() { return conveyor; }
-    void setConveyor(bool conv) { conveyor = conv; }
-    void setBin(int bin) { bin_id = bin; }
+    // std::string getType() { return type; }
+    // bool inAction() { return inAction; }
+    // void setInAction(bool act) { inAction = act; }
+    // bool onConveyor() { return conveyor; }
+    // void setConveyor(bool conv) { conveyor = conv; }
+    // void setBin(int bin) { bin_id = bin; }
     void estimateAndUpdateTransform();
-    
+    bool hasConveyorPartExceededLimit(double threshold);
 
 };
 
 void availablePart::estimateAndUpdateTransform(){
-    if (conveyor){
-      ros::Duration diff = ros::Time::now() - lastPoseUpdateTime;
-      pose.pose.position.y -= conveyorVel*(diff.sec+diff.nsec*pow(10,-9));
-      lastPoseUpdateTime = ros::Time::now();
-    }
+    ros::Duration diff = ros::Time::now() - lastPoseUpdateTime;
+    pose.pose.position.y -= conveyorVel*(diff.sec+diff.nsec*pow(10,-9));
+    lastPoseUpdateTime = ros::Time::now();
+}
+
+bool availablePart::hasConveyorPartExceededLimit(double threshold){
+    if (pose.pose.position.y > threshold)
+      return true;
+    return false;
 }
 
 class availablePartsManager{
   private:
     std::vector<availablePart> availableParts;
+    std::vector<availablePart> conveyorParts;
     std::map<std::string,int> type_count;
     std::map<std::string,int> type_id_prev;
+    void addTypeCount(std::string type, int count);
+    void addTypeIdPrev(std::string type, int id);
+
   public:
     availablePartsManager() {
       
     }
-    void update();
+    // void update();
+    // availablePart mostRecentPart;
     void updateTransforms();
-    void addTypeCount(std::string type, int count);
-    void addTypeIdPrev(std::string type, int id);
+    std::vector<availablePart> getConveyorPartsExceedingLimit(double threshold = 1);
     int getTypeCount(std::string type);
+    int getNonRequiredTypeCount(std::string type);
+    availablePart getNonRequiredPart(std::string type, bool markAsRequired);  // Always call getNonRequiredTypeCount first
     int getTypeIdPrev(std::string type);
     std::vector<availablePart> getAvailableParts() { return availableParts;}
     bool addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame);
     void updateKittableParts(std::vector<std::string>);
+    void setInAction(std::string typeID, bool inAction = true);
     availablePart getStaticKittablePart();
     std::vector<availablePart> getStaticKittableParts();
 };
 
+int availablePartsManager::getNonRequiredTypeCount(std::string type){
+    int count = 0;
+    for (auto i : availableParts){
+      if (!i.req_for_kitting && i.type == type){
+        count++;
+      }
+    }
+    return count;
+}
+
+void availablePartsManager::setInAction(std::string typeID, bool inAction){
+    std::vector<availablePart>::iterator it;
+    if ( ( it = std::find_if(availableParts.begin(), availableParts.end(), [typeID] (availablePart p) { return (p.type_id == typeID); }) ) != availableParts.end()){
+      it->inAction = inAction;
+    }
+}
+
+availablePart availablePartsManager::getNonRequiredPart(std::string type, bool markAsRequired){
+    for (auto i : availableParts){
+      if (!i.req_for_kitting){
+        if (i.type == type){
+          i.req_for_kitting = true;
+          return i;
+        }
+      }
+    }
+}
 
 void availablePartsManager::updateKittableParts(std::vector<std::string> requiredTypes){
     for (auto i : availableParts){
-      if (std::find(requiredTypes.begin(), requiredTypes.end(), i.getType()) != requiredTypes.end())
-        i.req_for_kitting = true;
-      else
-        i.req_for_kitting = false;
+      if (!i.req_for_kitting){
+        if ( (std::find(requiredTypes.begin(), requiredTypes.end(), i.type) != requiredTypes.end()))
+          i.req_for_kitting = true;
+      }
     }
 }
 
@@ -169,7 +230,7 @@ int availablePartsManager::getTypeIdPrev(std::string type){
 
 availablePart availablePartsManager::getStaticKittablePart(){
     for (auto i : availableParts){
-      if (i.req_for_kitting && !i.conveyor)
+      if (i.req_for_kitting)
         return i;
     }
 }
@@ -177,16 +238,25 @@ availablePart availablePartsManager::getStaticKittablePart(){
 std::vector<availablePart> availablePartsManager::getStaticKittableParts(){
     std::vector<availablePart> parts;
     for (auto i : availableParts){
-      if (i.req_for_kitting && !i.conveyor)
+      if (i.req_for_kitting)
         parts.push_back(i);
     }
     return parts;
 }
 
 void availablePartsManager::updateTransforms() {
-    for (std::vector<availablePart>::iterator it = availableParts.begin(); it!=availableParts.end(); it++){
+    for (std::vector<availablePart>::iterator it = conveyorParts.begin(); it!=conveyorParts.end(); it++){
       it->estimateAndUpdateTransform();
     }
+}
+
+std::vector<availablePart> availablePartsManager::getConveyorPartsExceedingLimit(double threshold){
+    std::vector<availablePart> parts;
+    for (std::vector<availablePart>::iterator it = conveyorParts.begin(); it!=conveyorParts.end(); it++){
+      if (it->hasConveyorPartExceededLimit(threshold))
+        parts.push_back(*it);
+    }
+    return parts;
 }
 
 void availablePartsManager::addTypeCount(std::string type, int count=1){
@@ -224,7 +294,7 @@ bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::st
       // Model type exists. Check position.
       std::vector<availablePart>::iterator it = availableParts.begin();
       while ( (it = std::find_if(it, availableParts.end(),
-        [m](availablePart part) { return part.getType()==m.type; })) != availableParts.end() ){
+        [m](availablePart part) { return part.type==m.type; })) != availableParts.end() ){
           if (positionEquality(world_pose.pose,it->pose.pose)){
             // availableParts.push_back(availablePart(m.type,world_pose));
             // addTypeCount(m.type);
@@ -236,6 +306,7 @@ bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::st
     // If it exits the above block without returning, it means object is new and must be added
     std::string id = m.type + std::to_string(getTypeIdPrev(m.type) + 1);
     availableParts.push_back(availablePart(m.type, id, world_pose));
+    // mostRecentPart = availablePart(m.type, id, world_pose);
     addTypeCount(m.type);
     addTypeIdPrev(m.type);
     /*ariac_2021_submission::addPlanningSceneCollision collision;
@@ -328,14 +399,27 @@ void availableProducts::addProductFromLogicalCam(nist_gear::Model m, std::string
 struct kittingProduct{
     nist_gear::Product product;
     bool required;
-    kittingProduct(nist_gear::Product p, bool r) : product(p), required(r) { }
+    bool partReorientation;
+    kittingProduct(nist_gear::Product p, bool r, bool part_reorientation = false) : product(p), required(r), partReorientation(part_reorientation) { }
+    geometry_msgs::Pose getProductDestinationPose(int kit_id /*, std::string agv_id*/);
 };
+
+
+geometry_msgs::Pose kittingProduct::getProductDestinationPose(int kit_id /*, std::string agv_id*/){
+    geometry_msgs::PoseStamped t;
+    t.header.frame_id = "kit_tray_" + std::to_string(kit_id);
+    // std::cout << "Using kit_id : " << t.header.frame_id << ", agv id : " << agv_id << std::endl;
+    t.pose = product.pose;
+    return tfBuffer.transform(t, "world").pose;
+}
 
 class kittingTask{
   public:
     // kittingTask(const nist_gear::KittingShipment& ks) : shipment(ks) { }
-    kittingTask(const nist_gear::KittingShipment& ks) 
-      : shipment_type(ks.shipment_type), agv_id(ks.agv_id), station_id(ks.station_id){
+    std::vector<kittingProduct> kitting_products;
+    kittingTask() { }
+    kittingTask(const nist_gear::KittingShipment& ks, bool newHighPriority = false) 
+      : shipment_type(ks.shipment_type), agv_id(ks.agv_id), station_id(ks.station_id), newHighPriorityOrder(newHighPriority) {
         if (agv_id.size() > 0)
           kit_id = int(agv_id[agv_id.size()-1] - '0');
         for (auto i : ks.products){
@@ -344,18 +428,52 @@ class kittingTask{
         }
     }
     // kit_tray_1, etc
-    geometry_msgs::Pose getProductDestinationPose(std::string type); // Always call after verifying availability
-    geometry_msgs::Pose getProductDestinationPose();
+    geometry_msgs::Pose getProductDestinationPose(std::string type); //Useless! // Always call after verifying availability
+    geometry_msgs::Pose getProductDestinationPose();  // Useless
     int getReqTypeCount(std::string type);
     int getReqCount();
     std::vector<std::string> getRequiredProductTypes();
+    std::vector<kittingProduct> getRequiredKittingProducts();
+    bool isNewHighPriority() { return newHighPriorityOrder; }
+    int getKitID() { return kit_id; }
+    std::string getAgvID() { return agv_id; }
+    bool isFinished() { return finished; }
+    void setFinished(bool Fin) { finished = Fin; }
+    int getPriority() { return kittingPriority; }
+    void setPriority(int priority) { kittingPriority = priority; }
+    void markProductReqByIndex(bool req, int index);
+    // bool areJobsAllotted() { return jobsAllotted; }
+    // void setJobsAllotted(bool b) { jobsAllotted = b; }
+    void sendAGV();
+    
   private:
     // nist_gear::KittingShipment shipment;
     std::string shipment_type, agv_id, station_id;
     int kit_id;
-    std::vector<kittingProduct> kitting_products;
+    bool finished = false;
+    bool newHighPriorityOrder = false;
+    // bool jobsAllotted = false;
+    int kittingPriority = 1; // 1 is least important, higher is more important
+    // std::vector<kittingProduct> kitting_products;
     // std::map<nist_gear::Product, bool> products; // product, and if it is required
 };
+
+
+std::vector<kittingProduct> kittingTask::getRequiredKittingProducts(){
+    std::vector<kittingProduct> products;
+    for (auto i : kitting_products)
+      if (i.required)
+        products.push_back(i);
+    return products;
+}
+
+void kittingTask::sendAGV(){
+  
+}
+
+void kittingTask::markProductReqByIndex(bool req, int index){
+    kitting_products[index].required = req;
+}
 
 std::vector<std::string> kittingTask::getRequiredProductTypes(){
     std::vector<std::string> product_types;
@@ -394,7 +512,6 @@ geometry_msgs::Pose kittingTask::getProductDestinationPose(std::string product_t
 }
 
 geometry_msgs::Pose kittingTask::getProductDestinationPose(){
-    std::vector<kittingProduct>::iterator it = kitting_products.begin();
     if (kitting_products.size() > 0){
       geometry_msgs::PoseStamped t;
       t.header.frame_id = "kit_tray_" + std::to_string(kit_id);
@@ -419,41 +536,176 @@ int kittingTask::getReqTypeCount(std::string product_type){
 
 
 
-// ----------------------------- JOB CLASS ------------------------------------------
+// ----------------------------- ENUM CLASS ------------------------------------------
 
 class enumClass{
   public:
     enum ROBOT{
-        kitting, assembly
+      kitting, assembly, any
     };
 
     enum TASK{
-        pick_and_place, assembly, part_reorientation
+      pick_and_place, assemble, part_reorientation
+    };
+
+    enum EVENT{
+      NEW_LC_PART_DETECTED, NEW_UNKNOWN_PART_DETECTED, CONVEYOR_THRESHOLD_REACHED,
+      FAULTY_SENSOR, ROBOT_HEALTH_FAILED, UPDATE_PENDING
     };
 };
+
+// ----------------------------- JOB CLASS ------------------------------------------
+
 
 class job{
   // A job object contains availablePart, assigned robot, etc. 
   // Used to perform kitting/assembly/part_reorientation by calling services.
   private:
     availablePart part;
+    std::string type_ID;
+    // std::string part_type;
     enumClass::ROBOT robot;
     enumClass::TASK task;
-    
+    geometry_msgs::Pose final_pose;
+    bool success = false;
+    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickupStaticClient;
+    bool resultReceived = false;
+
   public:
     job() { }
-    job(availablePart p, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
-      enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t) { }
+    job(const job& j) : part(j.part), type_ID(j.type_ID), robot(j.robot), task(j.task), final_pose(j.final_pose), success(j.success) { }
+    // job(std::string partType, geometry_msgs::Pose finalPose, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
+    //   enumClass::TASK t = enumClass::TASK::pick_and_place) : part_type(partType), robot(r), task(t), final_pose(finalPose) { }
+    job(availablePart p, geometry_msgs::Pose finalPose, std::string ID,  boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickStaticClient, 
+      enumClass::ROBOT r = enumClass::ROBOT::kitting, 
+      enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t), final_pose(finalPose) { }
     void perform();
     bool isPerforming();
+    bool gotResult() { return resultReceived; }
+    bool isSuccess() { return success; }
+    std::string getTypeID() { return type_ID; }
+    void setPickUpStaticClient(boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> client) { pickupStaticClient = client; }
+    enumClass::TASK getTask() { return task; }
+    void setTask(enumClass::TASK T) { task = T; }
+    enumClass::ROBOT getRobot() { return robot; }
+    void setRobot(enumClass::ROBOT R) { robot = R; }
+    void sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
+    void sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
+    void sppActiveCb();
+
     
 };
 
+void job::perform(){
+    std::cout << "Perform called!" << std::endl;
+    if (task = enumClass::TASK::pick_and_place){
+      ariac_2021_submission::pickupStaticObjectGoal goal;
+      goal.ID = type_ID;
+      goal.initial_pose = part.pose.pose;
+      goal.final_pose = final_pose;
+      pickupStaticClient->sendGoal(goal, boost::bind(&job::sppDoneCb, this, _1, _2), boost::bind(&job::sppActiveCb, this), boost::bind(&job::sppFeedbackCb, this, _1));
 
+    }
+}
 
+void job::sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
+    
+}
 
+void job::sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
+    std::cout << "Pick and place for object " << type_ID << " finished with state : " << state.toString().c_str() << std::endl;
+    if (result->success){
+      std::cout << "SUCCESS!" << std::endl;
+      resultReceived = true;
+      success = true;
+    }
+    else{
+      std::cout << "FAILED!" << std::endl;
+      resultReceived = true;
+      success = false;
+    }
+}
 
+void job::sppActiveCb(){
+    std::cout << "Goal has been sent!" << std::endl;
+}
 
+// --------------------------------- JOB INTERFACE STRUCT --------------------------------------
+
+struct jobInterface{
+  public:
+    std::vector<job> currentJobs;
+    std::vector<job> pendingJobs;
+    std::vector<job> highPriorityJobs;
+    // std::vector<job> currentlyImpossiblePendingJobs;
+    bool assigned = false;
+  
+    jobInterface() { }
+    // int getCurrentJobsCount() { return currentJobs.size(); }
+    // int getpendingJobsCount() { return pendingJobs.size(); }
+    // int gethighPriorityJobsCount() { return highPriorityJobs.size(); }
+    // int getImpossibleJobsCount() { return currentlyImpossiblePendingJobs.size(); }
+    int getJobCountByTask(enumClass::TASK Task);
+    bool isCurrentRobotInAction(enumClass::ROBOT r);   // If 
+    bool areCurrentRobotsInAction();
+    bool currentJobGotResult();
+    std::vector<enumClass::ROBOT> getRobotsNotInAction();
+    int getPendingJobCountByRobot(enumClass::ROBOT R);
+    job eraseAndGetPendingJobByRobot(enumClass::ROBOT R);
+
+};
+
+int jobInterface::getJobCountByTask(enumClass::TASK Task){
+
+}
+
+bool jobInterface::isCurrentRobotInAction(enumClass::ROBOT r){
+    if (std::find_if(currentJobs.begin(), currentJobs.end(), [r] (job j) { return (j.getRobot() == r); }) != currentJobs.end())
+      return true;
+    return false;
+}
+
+bool jobInterface::areCurrentRobotsInAction(){
+    if (isCurrentRobotInAction(enumClass::ROBOT::kitting) && isCurrentRobotInAction(enumClass::ROBOT::assembly))
+      return true;
+    return false;
+}
+
+bool jobInterface::currentJobGotResult(){
+    for (auto i : currentJobs){
+      if (i.gotResult())
+        return true;
+    }
+    return false;
+}
+
+std::vector<enumClass::ROBOT> jobInterface::getRobotsNotInAction(){
+    std::vector<enumClass::ROBOT> robots;
+    if (!isCurrentRobotInAction(enumClass::ROBOT::kitting))
+      robots.push_back(enumClass::ROBOT::kitting);
+    if (!isCurrentRobotInAction(enumClass::ROBOT::assembly))
+      robots.push_back(enumClass::ROBOT::assembly);
+    return robots;
+}
+
+int jobInterface::getPendingJobCountByRobot(enumClass::ROBOT R){
+    int count = 0;
+    for (auto j : pendingJobs){
+      if (j.getRobot() == R)
+        count++;
+    }
+    return count;
+}
+
+job jobInterface::eraseAndGetPendingJobByRobot(enumClass::ROBOT R){
+    job j;
+    for (std::vector<job>::iterator i = pendingJobs.begin(); i!=pendingJobs.end(); i++)
+      if (i->getRobot() == R){
+        j = job(*i);
+        pendingJobs.erase(i);
+        return j;
+      }
+}
 
 
 // --------------------------------- TASKMANAGER CLASS ---------------------------------------
@@ -477,17 +729,17 @@ class TaskManager{
         pickupStaticObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>("ariac/kitting/pick_and_place_static_action");
         pickupStaticObjectClient->waitForServer();
         while (availablePartsManagerInstance.getAvailableParts().size() == 0){
-          std::cout << "No parts available yet" << std::endl;
+          // std::cout << "No parts available yet" << std::endl;
           ros::spinOnce();
         }
         ros::Rate rate(1);
         while (_nh->ok()){
-          jobScheduler();
+          jobAllocator();
           // ros::spinOnce(); // Need to test if fast subscriberCallbacks also get called without this.
           rate.sleep();
         }
     }
-    
+
 
   private:
     ros::NodeHandlePtr _nh;
@@ -503,11 +755,14 @@ class TaskManager{
     // boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
     std::vector<geometry_msgs::TransformStamped> bin_transforms;
     std::vector<kittingTask> kittingTasks;
-    std::vector<job> pendingJobs;
-    job currentJob;
     boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_1_2;
     boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_3_4;
     bool kittingPickAndPlaceInProgress = false;
+    // std::vector<job> currentJobs;
+    // std::vector<job> pendingJobs;
+    // std::vector<job> highPriorityJobs;
+    // std::vector<job> currentlyImpossiblePendingJobs;
+    jobInterface orderJobInterface;
     void lc_1_2_timer_callback(const ros::TimerEvent& e);
     void lc_3_4_timer_callback(const ros::TimerEvent& e);
     void orderCallback(const nist_gear::OrderConstPtr& orderMsg);
@@ -515,49 +770,119 @@ class TaskManager{
     bool isProductAvailable(std::vector<nist_gear::Model>::const_iterator i, std::vector<nist_gear::Product> _currentAvailableParts);
     void printStaticTF();
     bool updateBinTransforms();
+    bool kittingHighPriorityExists();
+    bool updateKittingFinished();   // sets kT to finished and sends AGV if reqCount = 0. returns true if all kTs are finished.
     int getPartBin(availablePart p);
     void samplePickAndPlace();
-    void jobScheduler();
+    void jobAllocator();
+    void eventManager(enumClass::EVENT e);
     // void lc12Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
     // void lc34Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
 };
 
-void TaskManager::jobScheduler(){
-    // Update
-    // samplePickAndPlace();
 
-    // first iter : 
-    // check required tasks. 
-    // assign jobs accordingly.
-    // If kitting 
+void TaskManager::eventManager(enumClass::EVENT e){
+    std::cout << "eventManager called!" << std::endl;
+    switch(e){
 
+      // for each kitting product in kittingTasks, if there is a non-required availablePart of same type,
+      // we mark it as req_for_kitting and create a pending job with 
+      /*case enumClass::EVENT::NEW_LC_PART_DETECTED :
+        // std::cout << "Inside new LC detected case" << std::endl;
+        for(auto it : kittingTasks){
+          std::vector<kittingProduct> products = it.getRequiredKittingProducts();
+          std::cout << products.size() << " kitting products are required" << std::endl;
+          for (std::vector<kittingProduct>::iterator product = products.begin(); product != products.end(); product++){
+            if (!product->partReorientation && product->required){
+              // std::cout << "Part doesn't require reorientation" << std::endl;
+              if (availablePartsManagerInstance.getNonRequiredTypeCount(product->product.type) > 0){
+                std::cout << "Adding pending job!" << std::endl;
+                availablePart part = availablePartsManagerInstance.getNonRequiredPart(product->product.type, true);
+                orderJobInterface.pendingJobs.push_back( job(part, product->getProductDestinationPose(it.getKitID()), part.type_id, pickupStaticObjectClient,
+                  enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place) );
+                it.markProductReqByIndex(false, (product - products.begin()));    // Mark kittingProduct as non-required.
+              }
+              else
+                std::cout << availablePartsManagerInstance.getNonRequiredTypeCount(product->product.type) << std::endl;
+            }
+          }
+        }*/
+        // std::cout << "Quit new LC detected case" << std::endl;
 
-    
-    availablePartsManagerInstance.updateTransforms();
-    if (!kittingPickAndPlaceInProgress && (kittingTasks.size() == 1)){
-      if (kittingTasks[0].getReqCount() > 0){
-        availablePartsManagerInstance.updateKittableParts(kittingTasks[0].getRequiredProductTypes());
-        std::vector<availablePart> staticKittableParts = availablePartsManagerInstance.getStaticKittableParts();
-        // pendingJobs.clear();
-        // for (auto i : availablePartsManagerInstance.getStaticKittableParts())
-        //   pendingJobs.push_back(job(i));
-        //// Do something to get the most important job 
-        if (staticKittableParts.size() > 0){
-          currentJob = job(staticKittableParts[0], enumClass::kitting, enumClass::pick_and_place);
-          currentJob.perform();
-          kittingPickAndPlaceInProgress = true;
+      case enumClass::EVENT::UPDATE_PENDING :
+        for (auto it : kittingTasks){
+          for (std::size_t i = 0; i < it.kitting_products.size(); i++){
+            if (it.kitting_products[i].required && availablePartsManagerInstance.getNonRequiredTypeCount(it.kitting_products[i].product.type) > 0){
+              std::cout << "-------------------------------" << std::endl;
+              std::cout << "Adding pending job!" << std::endl;
+              availablePart part = availablePartsManagerInstance.getNonRequiredPart(it.kitting_products[i].product.type, true);
+              orderJobInterface.pendingJobs.push_back( job(part, it.kitting_products[i].getProductDestinationPose(it.getKitID()), 
+                part.type_id, pickupStaticObjectClient, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place));
+              std::cout << "BEFORE : " << it.getReqCount() << std::endl;
+              it.kitting_products[i].required = false;
+              std::cout << "AFTER : " << it.getReqCount() << std::endl;
+            }
+          }
         }
-        else
-          std::cout << "There are no static kittable parts currently present!" << std::endl;
-      }
-      else{
-        std::cout << "\033[1;34mKitting has been completed!\033[0m" << std::endl;
+    }
+}
+
+
+void TaskManager::jobAllocator(){
+    std::cout << "jobAllocator called" << std::endl;
+    eventManager(enumClass::UPDATE_PENDING);
+    std::cout << orderJobInterface.currentJobs.size() << " , " << orderJobInterface.pendingJobs.size() << std::endl;
+    availablePartsManagerInstance.updateTransforms();
+    if (orderJobInterface.currentJobs.size() > 0){
+      if (orderJobInterface.currentJobGotResult()){   // if any of current jobs got result, if a pending job of same robot type exists, then we erase it and pushback a pending job
+        for (std::vector<job>::iterator i = orderJobInterface.currentJobs.begin(); i!=orderJobInterface.currentJobs.end(); i++){
+          if ( (*i).gotResult() && (*i).isSuccess() && orderJobInterface.getPendingJobCountByRobot((*i).getRobot()) > 0 ){
+            job newCurrentJob = job( orderJobInterface.eraseAndGetPendingJobByRobot((i->getRobot())) );
+            newCurrentJob.perform();
+            availablePartsManagerInstance.setInAction(newCurrentJob.getTypeID(), true);
+            orderJobInterface.currentJobs.erase(i);
+            orderJobInterface.currentJobs.push_back( newCurrentJob );
+          }
+        }
       }
     }
-
+    // if no currentJobs and no pendingJobs exist, we check if kittingTasks have been finished and marked as finished. If not marked as finished, we send AGV and mark as finished.
     else{
-
+      if (orderJobInterface.pendingJobs.size() == 0){
+        for (auto kT : kittingTasks){
+          if (kT.getReqCount() == 0 && !kT.isFinished()){
+            kT.sendAGV();
+            kT.setFinished(true);
+          }
+        }
+      }
     }
+
+    // allocate pendingJob to robot not in action. Case of pendingJobs > 0 regardless of currentJobs size
+    if (!orderJobInterface.areCurrentRobotsInAction()){
+      std::cout << "Some robot not in action!" << std::endl;
+      for (auto robot : orderJobInterface.getRobotsNotInAction()){
+        if (orderJobInterface.getPendingJobCountByRobot(robot) > 0){
+          std::cout << "Adding new current job!" << std::endl;
+          job newCurrentJob = job( orderJobInterface.eraseAndGetPendingJobByRobot(robot) );
+          newCurrentJob.perform();
+          orderJobInterface.currentJobs.push_back( newCurrentJob );
+        }
+      }
+    }
+
+    // if (kittingTasks.size() > 0){
+    //   if (orderJobInterface.currentJobs.size() == 0 && orderJobInterface.pendingJobs.size() == 0 && orderJobInterface.highPriorityJobs.size() == 0){
+    //     // if (!kittingHighPriorityExists()){
+    //     //   for (auto kt : kittingTasks){
+    //     //     if (kt.getReqCount() == 0){
+    //     //       kt.sendAGV();
+    //     //       kt.setFinished(true);
+    //     //     }
+    //     //   }
+    //     // }
+    //   }
+    // }
 }
 
 void TaskManager::samplePickAndPlace(){
@@ -590,6 +915,21 @@ void TaskManager::samplePickAndPlace(){
     std::cout << "Server side returned success = " << pickupStaticObjectClient->getResult()->success << std::endl;
     if (pickupStaticObjectClient->getResult()->success)
       std::cout << "YAYYYYY" << std::endl;
+}
+
+bool TaskManager::kittingHighPriorityExists(){
+    for (auto i : kittingTasks){
+      if (i.isNewHighPriority())
+        return true;
+    }
+    return false;
+}
+
+bool TaskManager::updateKittingFinished(){
+    std::vector<kittingTask>::iterator it;
+    // If there exists any kT that has no required parts but isn't marked as finished
+    // if (it = (std::find_if(kittingTasks.begin(), kittingTasks.end(), [] (kittingTask k) { return (!k.isFinished() && k.getReqCount()==0); }) != kittingTasks.end() ))
+
 }
 
 
@@ -663,11 +1003,13 @@ void TaskManager::printStaticTF() {
 
 
 void TaskManager::lc_1_2_timer_callback(const ros::TimerEvent& e) {
+  if (kittingTasks.size() > 0){
     msg_1_2 = ros::topic::waitForMessage<nist_gear::LogicalCameraImage>("/ariac/logical_camera_1_2");
-    std::cout << "---------------------------------------------" << std::endl;
+    // std::cout << "---------------------------------------------" << std::endl;
     for (std::vector<nist_gear::Model>::const_iterator i = msg_1_2->models.begin(); i!=msg_1_2->models.end(); i++){
       // std::cout << availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_1_2_frame") << std::endl;
       availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_1_2_frame");
+        // eventManager(enumClass::EVENT::NEW_LC_PART_DETECTED);
     // std::vector<nist_gear::Product> _currentAvailableParts = availableParts.getProducts();
     // for (std::vector<nist_gear::Model>::const_iterator i = msg_1_2->models.begin(); i!=msg_1_2->models.end(); i++){
     //   if (!isProductAvailable(i,_currentAvailableParts)) {
@@ -675,6 +1017,7 @@ void TaskManager::lc_1_2_timer_callback(const ros::TimerEvent& e) {
     //     // getModelBin(*i);
     //   }
     }
+  }
     // std::cout << availablePartsManagerInstance.getAvailableParts().size() << std::endl;
     // for (auto it : availablePartsManagerInstance.getAvailableParts())
     //   std::cout << getPartBin(it) << std::endl;
@@ -685,16 +1028,19 @@ void TaskManager::lc_1_2_timer_callback(const ros::TimerEvent& e) {
 }
 
 void TaskManager::lc_3_4_timer_callback(const ros::TimerEvent& e) {
-    msg_3_4 = ros::topic::waitForMessage<nist_gear::LogicalCameraImage>("/ariac/logical_camera_3_4");
-    // std::vector<nist_gear::Product> _currentAvailableParts = availableParts.getProducts();
-    std::cout << "---------------------------------------------" << std::endl;
-    for (std::vector<nist_gear::Model>::const_iterator i = msg_3_4->models.begin(); i!=msg_3_4->models.end(); i++){
-      // std::cout << availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_3_4_frame") << std::endl;
-      availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_3_4_frame");
-    //   if (!isProductAvailable(i,_currentAvailableParts)) {
-    //     availableParts.addProductFromLogicalCam(*i);
-    //     getModelBin(*i);
-    //   }
+    if (kittingTasks.size() > 0){
+      msg_3_4 = ros::topic::waitForMessage<nist_gear::LogicalCameraImage>("/ariac/logical_camera_3_4");
+      // std::vector<nist_gear::Product> _currentAvailableParts = availableParts.getProducts();
+      // std::cout << "---------------------------------------------" << std::endl;
+      for (std::vector<nist_gear::Model>::const_iterator i = msg_3_4->models.begin(); i!=msg_3_4->models.end(); i++){
+        // std::cout << availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_3_4_frame") << std::endl;
+        availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_3_4_frame");
+      
+      //   if (!isProductAvailable(i,_currentAvailableParts)) {
+      //     availableParts.addProductFromLogicalCam(*i);
+      //     getModelBin(*i);
+      //   }
+      }
     }
     // std::cout << availablePartsManagerInstance.getAvailableParts().size() << std::endl;
     // for (auto it : availablePartsManagerInstance.getAvailableParts())
@@ -711,6 +1057,9 @@ void TaskManager::orderCallback(const nist_gear::OrderConstPtr& orderMsg){
     }
     // Need to add for assembly shipments
     std::cout << "Size of kittingTasks is " << kittingTasks.size() << std::endl;
+    // std::cout << "Req count before assigning : " << kittingTasks[0].getReqCount() << std::endl;
+    // kittingTasks[0].kitting_products[0].required = false;
+    // std::cout << "Req count after assigning : " << kittingTasks[0].getReqCount() << std::endl;
 
 }
 

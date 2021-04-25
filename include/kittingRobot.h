@@ -37,7 +37,7 @@ enum collisionAction{
 
 // rostopic echo /ariac/kittinmove_group/feedback
 
-geometry_msgs::Vector3 rpyFromQuat(geometry_msgs::Quaternion quat){
+static geometry_msgs::Vector3 rpyFromQuat(geometry_msgs::Quaternion quat){
     // tf::Quaternion q(quat.x, quat.y, quat.z, quat.w);
     tf2::Quaternion q1(quat.x, quat.y, quat.z, quat.w);
 
@@ -48,7 +48,7 @@ geometry_msgs::Vector3 rpyFromQuat(geometry_msgs::Quaternion quat){
     return v;
 }
 
-geometry_msgs::Quaternion quatFromRPY(double roll, double pitch, double yaw){
+static geometry_msgs::Quaternion quatFromRPY(double roll, double pitch, double yaw){
     // tf::Quaternion quat;
     tf2::Quaternion quat;
     geometry_msgs::Quaternion q;
@@ -221,7 +221,6 @@ class kittingRobot{
     // void probe(geometry_msgs::Vector3 direction);
     bool PickAndPlace(std::string ID, geometry_msgs::Pose initialPose, geometry_msgs::Pose finalPose, double offset = 0.15);
     void probe(moveit_msgs::RobotTrajectory trajectory);
-    void retract();
     bool compareCurrentToTargetJointPositions(std::vector<double> target, double tolerance = 0.05);
     void staticPickAndPlaceCallback(const ariac_2021_submission::pickupStaticObjectGoalConstPtr &goal);
     
@@ -334,11 +333,6 @@ void kittingRobot::probe(moveit_msgs::RobotTrajectory trajectory){
       // call follow_jt_traj action 
     }*/
     // move_group_interface->execute(trajectory);
-}
-
-void kittingRobot::retract(){
-    std::vector<double> cur_joint_pos = move_group_interface->getCurrentJointValues();
-    
 }
 
 void kittingRobot::fjtFeedbackCb(const control_msgs::FollowJointTrajectoryFeedbackConstPtr& feedback){
