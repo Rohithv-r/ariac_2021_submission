@@ -25,7 +25,7 @@
 tf2_ros::Buffer tfBuffer;
 boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
 ros::ServiceClient addPlanningSceneCollisionKittingClient;
-ros::CallbackQueue action_queue;
+// ros::CallbackQueue action_queue;
 
 void start_competition(const ros::NodeHandlePtr& node) {
     // Create a Service client for the correct service, i.e. '/ariac/start_competition'.
@@ -165,7 +165,7 @@ class availablePartsManager{
     std::vector<availablePart> getConveyorPartsExceedingLimit(double threshold = 1);
     int getTypeCount(std::string type);
     int getNonRequiredTypeCount(std::string type);
-    availablePart getNonRequiredPart(std::string type, bool markAsRequired);  // Always call getNonRequiredTypeCount first
+    availablePart& getNonRequiredPart(std::string type, bool markAsRequired);  // Always call getNonRequiredTypeCount first
     int getTypeIdPrev(std::string type);
     std::vector<availablePart> getAvailableParts() { return availableParts;}
     bool addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame);
@@ -192,8 +192,8 @@ void availablePartsManager::setInAction(std::string typeID, bool inAction){
     }
 }
 
-availablePart availablePartsManager::getNonRequiredPart(std::string type, bool markAsRequired){
-    for (auto i : availableParts){
+availablePart& availablePartsManager::getNonRequiredPart(std::string type, bool markAsRequired){
+    for (auto &i : availableParts){
       if (!i.req_for_kitting){
         if (i.type == type){
           i.req_for_kitting = true;
@@ -581,39 +581,58 @@ class TaskManager{
         enumClass::TASK task;
         geometry_msgs::Pose final_pose;
         bool success = false;
+        bool performCalled = false;
         boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickupStaticClient;
         bool resultReceived = false;
-        ros::NodeHandlePtr _nh_action;
+        ros::NodeHandlePtr job_nh;
+        // ros::Subscriber result_sub, feedback_sub;
+        // TaskManager& Parent;
 
       public:
+        // job(TaskManager& Tmg) : Parent(Tmg) { }
         job() { }
-        job(const job& j) : part(j.part), type_ID(j.type_ID), robot(j.robot), task(j.task), final_pose(j.final_pose), success(j.success), _nh_action(j._nh_action) {
-          // _nh = boost::make_shared<ros::NodeHandle>();
-          pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*_nh_action, "ariac/kitting/pick_and_place_static_action");
-          pickupStaticClient->waitForServer();
+        job(availablePart p, geometry_msgs::Pose finalPose, std::string ID, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
+          enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t), final_pose(finalPose) {
+            // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
+            // pickupStaticClient->waitForServer();
         }
+        /*job(const job& j) : part(j.part), type_ID(j.type_ID), robot(j.robot), task(j.task), final_pose(j.final_pose), success(j.success), job_nh(j.job_nh), pickupStaticClient(j.pickupStaticClient) {
+          // _nh = boost::make_shared<ros::NodeHandle>();
+          // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
+          // pickupStaticClient->waitForServer();
+        }*/
         // job(std::string partType, geometry_msgs::Pose finalPose, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
         //   enumClass::TASK t = enumClass::TASK::pick_and_place) : part_type(partType), robot(r), task(t), final_pose(finalPose) { }
-        job(availablePart p, geometry_msgs::Pose finalPose, std::string ID, ros::NodeHandlePtr& nodeHandle,
+        job(availablePart p, geometry_msgs::Pose finalPose, std::string ID, ros::NodeHandlePtr& nodeHandle, boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>& ppClient,
           enumClass::ROBOT r = enumClass::ROBOT::kitting, 
-          enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t), final_pose(finalPose), _nh_action(nodeHandle) {
-            pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*_nh_action, "ariac/kitting/pick_and_place_static_action");
-            pickupStaticClient->waitForServer();
+          enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t), final_pose(finalPose), job_nh(nodeHandle), pickupStaticClient(ppClient) {
+            // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
+            // pickupStaticClient->waitForServer();
         }
+        
         void perform();
-        bool isPerforming();
+        void setResultReceived(bool r) { resultReceived = r; }
+        bool isPerformCalled() { return performCalled; };
         bool gotResult() { return resultReceived; }
         bool isSuccess() { return success; }
+        std::string getPartType() { return part.type; }
+        availablePart getPart() { return part; }
+        geometry_msgs::Pose getFinalPose() { return final_pose; }
+        ros::NodeHandlePtr getNodeHandle() { return job_nh; }
+        boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> getClient() { return pickupStaticClient; }
         std::string getTypeID() { return type_ID; }
         void setPickUpStaticClient(boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> client) { pickupStaticClient = client; }
         enumClass::TASK getTask() { return task; }
         void setTask(enumClass::TASK T) { task = T; }
         enumClass::ROBOT getRobot() { return robot; }
         void setRobot(enumClass::ROBOT R) { robot = R; }
-        void sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
-        void sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
-        void sppActiveCb();
+        // void sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
+        // void sppResultCb(const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
+        // void sppStatusCb(const actionlib::SimpleClientGoalState& state);
         void performSpinOnce();
+        void sppActDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
+        void sppActActiveCb();
+        void sppActFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
 
         
     };
@@ -626,7 +645,6 @@ class TaskManager{
         std::vector<job> pendingJobs;
         std::vector<job> highPriorityJobs;
         // std::vector<job> currentlyImpossiblePendingJobs;
-        bool assigned = false;
       
         jobInterface() { }
         // int getCurrentJobsCount() { return currentJobs.size(); }
@@ -640,14 +658,17 @@ class TaskManager{
         std::vector<enumClass::ROBOT> getRobotsNotInAction();
         int getPendingJobCountByRobot(enumClass::ROBOT R);
         job eraseAndGetPendingJobByRobot(enumClass::ROBOT R);
+        void eraseAndAddPendingJobByRobot(enumClass::ROBOT R);
+        std::vector<std::string> performCurrentJobs();
         void spinCurrentJobs();
+        void logJobDetails();
 
     };
 
-
+    TaskManager() { }
     TaskManager(ros::NodeHandlePtr& nh) : _nh(nh) {
         tfListenerPtr = boost::make_shared<tf2_ros::TransformListener>(tfBuffer);
-        nh_action = boost::make_shared<ros::NodeHandle>();
+        // nh_action = boost::make_shared<ros::NodeHandle>();
         addPlanningSceneCollisionKittingClient = _nh->serviceClient<ariac_2021_submission::addPlanningSceneCollision>("ariac/kitting/add_kitting_planning_scene_collision");
         addPlanningSceneCollisionKittingClient.waitForExistence(ros::Duration(10));
         order_sub = _nh->subscribe("ariac/orders", 4, &TaskManager::orderCallback, this);
@@ -660,8 +681,8 @@ class TaskManager{
           std::cout << "Unable to update bin transforms!" << std::endl;
         }
         start_competition(_nh);
-        // pickupStaticObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>("ariac/kitting/pick_and_place_static_action");
-        // pickupStaticObjectClient->waitForServer();
+        pickupStaticObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>("ariac/kitting/pick_and_place_static_action");
+        pickupStaticObjectClient->waitForServer();
         while (availablePartsManagerInstance.getAvailableParts().size() == 0){
           // std::cout << "No parts available yet" << std::endl;
           ros::spinOnce();
@@ -678,7 +699,7 @@ class TaskManager{
 
   private:
     ros::NodeHandlePtr _nh;
-    ros::NodeHandlePtr nh_action;
+    // ros::NodeHandlePtr nh_action;
     ros::Subscriber order_sub;
     ros::Subscriber lc_conveyor_sub;
     // ros::Subscriber lc_1_2_sub;
@@ -686,7 +707,7 @@ class TaskManager{
     ros::Timer lc_1_2;
     ros::Timer lc_3_4;
     availablePartsManager availablePartsManagerInstance;
-    // boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickupStaticObjectClient;
+    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickupStaticObjectClient;
     // tf2_ros::Buffer tfBuffer;
     // boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
     std::vector<geometry_msgs::TransformStamped> bin_transforms;
@@ -712,6 +733,9 @@ class TaskManager{
     void samplePickAndPlace();
     void jobAllocator();
     void eventManager(enumClass::EVENT e);
+    // void sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
+    // void sppActiveCb();
+    // void sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
     // void summa();
     // void lc12Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
     // void lc34Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
@@ -752,11 +776,15 @@ void TaskManager::eventManager(enumClass::EVENT e){
               std::cout << "-------------------------------" << std::endl;
               std::cout << "Adding pending job!" << std::endl;
               availablePart part = availablePartsManagerInstance.getNonRequiredPart(it.kitting_products[i].product.type, true);
-              orderJobInterface.pendingJobs.push_back( job(part, it.kitting_products[i].getProductDestinationPose(it.getKitID()), 
-                part.type_id, _nh, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place));
+              job j(part, it.kitting_products[i].getProductDestinationPose(it.getKitID()), 
+                part.type_id, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
+              orderJobInterface.pendingJobs.push_back( j );
+              std::cout << orderJobInterface.pendingJobs.size() << std::endl;
               std::cout << "BEFORE : " << it.getReqCount() << std::endl;
               it.kitting_products[i].required = false;
               std::cout << "AFTER : " << it.getReqCount() << std::endl;
+              std::cout << orderJobInterface.pendingJobs[0].getTypeID() << " XXXXX" << std::endl;
+              std::cout << "*****************************************" << std::endl;
             }
           }
         }
@@ -766,23 +794,47 @@ void TaskManager::eventManager(enumClass::EVENT e){
 
 void TaskManager::jobAllocator(){
     std::cout << "jobAllocator called" << std::endl;
-    orderJobInterface.spinCurrentJobs();
+    // orderJobInterface.spinCurrentJobs();
     eventManager(enumClass::UPDATE_PENDING);
     std::cout << orderJobInterface.currentJobs.size() << " , " << orderJobInterface.pendingJobs.size() << std::endl;
     availablePartsManagerInstance.updateTransforms();
     if (orderJobInterface.currentJobs.size() > 0){
+      // std::cout << "YEY 1" << std::endl;
+      orderJobInterface.logJobDetails();
       if (orderJobInterface.currentJobGotResult()){   // if any of current jobs got result, if a pending job of same robot type exists, then we erase it and pushback a pending job
-        for (std::vector<job>::iterator i = orderJobInterface.currentJobs.begin(); i!=orderJobInterface.currentJobs.end(); i++){
+        
+        for (std::vector<job>::iterator i = orderJobInterface.currentJobs.begin(); i!=orderJobInterface.currentJobs.end();){
           if ( (*i).gotResult() && (*i).isSuccess() && orderJobInterface.getPendingJobCountByRobot((*i).getRobot()) > 0 ){
             std::cout << "Replacing current finished job!" << std::endl;
-            job newCurrentJob = job( orderJobInterface.eraseAndGetPendingJobByRobot((i->getRobot())) );
-            newCurrentJob.perform();
-            availablePartsManagerInstance.setInAction(newCurrentJob.getTypeID(), true);
+            enumClass::ROBOT robot = i->getRobot();
             orderJobInterface.currentJobs.erase(i);
-            orderJobInterface.currentJobs.push_back( newCurrentJob );
+            // orderJobInterface.eraseAndAddPendingJobByRobot(robot);
+            for (std::vector<job>::iterator i = orderJobInterface.pendingJobs.begin(); i!=orderJobInterface.pendingJobs.end(); i++){
+              if (i->getRobot() == robot){
+                job j(i->getPart(), i->getFinalPose(), 
+                  i->getTypeID(), _nh, pickupStaticObjectClient, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
+                orderJobInterface.currentJobs.push_back(j);
+                orderJobInterface.pendingJobs.erase(i);
+                break;
+              }
+            }
+            std::vector<std::string> ids = orderJobInterface.performCurrentJobs();
+            for (auto ID : ids)
+              availablePartsManagerInstance.setInAction(ID, true);
+            // job newCurrentJob = job( orderJobInterface.eraseAndGetPendingJobByRobot((i->getRobot())) );
+            // newCurrentJob.perform();
+            // availablePartsManagerInstance.setInAction(newCurrentJob.getTypeID(), true);
+            // i = orderJobInterface.currentJobs.erase(i);
+            // orderJobInterface.currentJobs.push_back( newCurrentJob );
+          }
+          else{
+            std::cout << "BABAAAALOL : " << (*i).gotResult() << " " << (*i).isSuccess() << " " << (orderJobInterface.getPendingJobCountByRobot((*i).getRobot()) > 0) << std::endl;
+            i++;
           }
         }
       }
+      else
+        std::cout << "LOOBAA : " << orderJobInterface.currentJobs[0].gotResult() << " " << orderJobInterface.currentJobs[0].getTypeID() << std::endl;
     }
     // if no currentJobs and no pendingJobs exist, we check if kittingTasks have been finished and marked as finished. If not marked as finished, we send AGV and mark as finished.
     else{
@@ -802,9 +854,22 @@ void TaskManager::jobAllocator(){
       for (auto robot : orderJobInterface.getRobotsNotInAction()){
         if (orderJobInterface.getPendingJobCountByRobot(robot) > 0){
           std::cout << "Adding new current job!" << std::endl;
-          job newCurrentJob = job( orderJobInterface.eraseAndGetPendingJobByRobot(robot) );
-          newCurrentJob.perform();
-          orderJobInterface.currentJobs.push_back( newCurrentJob );
+          // orderJobInterface.eraseAndAddPendingJobByRobot(robot);
+          for (std::vector<job>::iterator i = orderJobInterface.pendingJobs.begin(); i!=orderJobInterface.pendingJobs.end(); i++){
+            if (i->getRobot() == robot){
+              job j(i->getPart(), i->getFinalPose(), 
+                i->getTypeID(), _nh, pickupStaticObjectClient, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
+              orderJobInterface.currentJobs.push_back(j);
+              // std::cout << "EEEF " << orderJobInterface.pendingJobs.erase(i)->getPart().type << std::endl;
+              std::cout << orderJobInterface.currentJobs[0].getPartType() << " @ " << orderJobInterface.pendingJobs[0].getPartType() << std::endl;
+              break;
+            }
+          }
+          std::vector<std::string> ids = orderJobInterface.performCurrentJobs();
+          for (auto ID : ids)
+            availablePartsManagerInstance.setInAction(ID, true);
+          // newCurrentJob.perform();
+          // orderJobInterface.currentJobs.push_back( newCurrentJob );
         }
       }
     }
@@ -822,6 +887,13 @@ void TaskManager::jobAllocator(){
     //   }
     // }
 }
+
+// void TaskManager::jobAllocator(){
+//     std::cout << "jobAllocator called" << std::endl;
+//     // orderJobInterface.spinCurrentJobs();
+//     eventManager(enumClass::UPDATE_PENDING);
+
+// }
 
 /*void TaskManager::samplePickAndPlace(){
     // pickupStaticObjectClient
@@ -854,6 +926,48 @@ void TaskManager::jobAllocator(){
     if (pickupStaticObjectClient->getResult()->success)
       std::cout << "YAYYYYY" << std::endl;
 }*/
+
+/*void TaskManager::sppActiveCb(){
+    std::cout << "Goal has been sent!" << std::endl;
+}
+
+void TaskManager::sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
+    std::cout << "FEEDBACK RECEIVEDDDDDDDD!" << std::endl;
+}
+
+void TaskManager::sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
+    std::cout << "FJT finished with state : " << state.toString().c_str() << std::endl;
+    if (result->success)
+      std::cout << "YESSSS. SUCCESSSSSS!" << std::endl;
+}*/
+
+void TaskManager::job::sppActActiveCb(){
+    std::cout << "Goal has been sent!" << std::endl;
+    std::cout << "Current part is actually " << part.type << " required? " << part.req_for_kitting << std::endl;
+}
+
+void TaskManager::job::sppActFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
+    std::cout << "FEEDBACK RECEIVEDDDDDDDD!" << std::endl;
+    if (feedback->feedback == feedback->PROBE_AND_PICK){
+      std::cout << "Summa setting to finished and result true : " << std::endl;
+      resultReceived = true;
+      std::cout << "Current part is actually " << part.type << " required? " << part.req_for_kitting << std::endl;
+    }
+}
+
+void TaskManager::job::sppActDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
+    std::cout << "FJT finished with state : " << state.toString().c_str() << std::endl;
+    setResultReceived(true);
+    std::cout << "EEHEE : " << gotResult() << std::endl;
+    std::cout << "Part type is : " << part.type << std::endl;
+    type_ID = "baloo";
+    if (result->success){
+      std::cout << "YESSSS. SUCCESSSSSS!" << std::endl;
+      success = true;
+    }
+    else
+      success = false;
+}
 
 bool TaskManager::kittingHighPriorityExists(){
     for (auto i : kittingTasks){
@@ -1015,24 +1129,27 @@ void TaskManager::lcConveyorCallback(const nist_gear::LogicalCameraImageConstPtr
 // }
 void TaskManager::job::perform(){
     std::cout << "Perform called!" << std::endl;
+    performCalled = true;
     if (task == enumClass::TASK::pick_and_place){
       ariac_2021_submission::pickupStaticObjectGoal goal;
       goal.ID = type_ID;
       goal.initial_pose = part.pose.pose;
       goal.final_pose = final_pose;
+      std::cout << "Part type is : " << part.type << std::endl;
       // std::cout << "Trying to connect to server!" << std::endl;
       // pickupStaticClient->waitForServer();
-      pickupStaticClient->sendGoal(goal, boost::bind(&job::sppDoneCb, this, _1, _2), boost::bind(&job::sppActiveCb, this), boost::bind(&job::sppFeedbackCb, this, _1));
+      pickupStaticClient->sendGoal(goal, boost::bind(&job::sppActDoneCb, this, _1, _2), boost::bind(&job::sppActActiveCb, this), boost::bind(&job::sppActFeedbackCb, this, _1));
+      // feedback_sub = job_nh->subscribe("ariac/kitting/pick_and_place_static_action/feedback", 3, &job::sppFeedbackCb, this);
+      // result_sub = job_nh->subscribe("ariac/kitting/pick_and_place_static_action/result", 3, &job::sppResultCb, this);
       // pickupStaticClient->waitForResult();
     }
 }
 
-void TaskManager::job::sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
+/*void TaskManager::job::sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
     std::cout << "FEEDBACK!" << std::endl;
 }
 
-void TaskManager::job::sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
-    std::cout << "Pick and place for object " << type_ID << " finished with state : " << state.toString().c_str() << std::endl;
+void TaskManager::job::sppResultCb(const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
     if (result->success){
       std::cout << "SUCCESS!" << std::endl;
       resultReceived = true;
@@ -1045,9 +1162,9 @@ void TaskManager::job::sppDoneCb(const actionlib::SimpleClientGoalState& state, 
     }
 }
 
-void TaskManager::job::sppActiveCb(){
-    std::cout << "Goal has been sent!" << std::endl;
-}
+void TaskManager::job::sppStatusCb(const actionlib::SimpleClientGoalState& state){
+    // std::cout << "Goal has been sent!" << std::endl;
+}*/
 
 void TaskManager::job::performSpinOnce(){
     ros::spinOnce();
@@ -1071,10 +1188,38 @@ bool TaskManager::jobInterface::areCurrentRobotsInAction(){
 
 bool TaskManager::jobInterface::currentJobGotResult(){
     for (auto i : currentJobs){
-      if (i.gotResult())
+      if (i.gotResult()){
+        std::cout << "Current got result!" << std::endl;
         return true;
+      }
+      else
+        std::cout << "MEHHH" << std::endl;
     }
     return false;
+}
+
+std::vector<std::string> TaskManager::jobInterface::performCurrentJobs(){    // returns id of the availablePart being performed
+    std::vector<std::string> ids;
+    for (auto it : currentJobs){
+      if (!it.isPerformCalled()){
+        it.perform();
+        ids.push_back(it.getTypeID());
+      }
+    }
+    return ids;
+}
+
+void TaskManager::jobInterface::logJobDetails(){
+    std::cout << "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$" << std::endl;
+    std::cout << "currentJobs details : " << std::endl;
+    for (auto& i : currentJobs){
+      std::cout << i.getPartType() << ", " << i.getRobot() << " " << i.gotResult() << std::endl;
+      // i.setResultReceived(true);
+    }
+    std::cout << "pendingJobs details : " << std::endl;
+    for (auto i : pendingJobs){
+      std::cout << i.getPartType() << ", " << i.getRobot() << " " << i.gotResult() << std::endl;
+    }
 }
 
 std::vector<enumClass::ROBOT> TaskManager::jobInterface::getRobotsNotInAction(){
@@ -1102,6 +1247,18 @@ TaskManager::job TaskManager::jobInterface::eraseAndGetPendingJobByRobot(enumCla
         j = job(*i);
         pendingJobs.erase(i);
         return j;
+      }
+}
+
+void TaskManager::jobInterface::eraseAndAddPendingJobByRobot(enumClass::ROBOT R){
+    for (std::vector<job>::iterator i = pendingJobs.begin(); i!=pendingJobs.end(); i++)
+      if (i->getRobot() == R){
+        // job j(i->getPart(), i->getFinalPose(), 
+        //         i->getTypeID(), i->getNodeHandle(), i->getClient(), enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
+        // currentJobs.push_back(j);
+        pendingJobs.erase(i);
+        return;
+        // return j;
       }
 }
 

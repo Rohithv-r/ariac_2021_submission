@@ -2,9 +2,14 @@
 string ID
 geometry_msgs/Pose initial_pose
 geometry_msgs/Pose final_pose
-string supporting_surface
 ---
 # Result
 bool success
 ---
-float64 feedback
+# Feedback
+uint8 feedback
+uint8 MOVING_TO_OBJECT=1
+uint8 PREGRASP=2
+uint8 PROBE_AND_PICK=3
+uint8 MOVE_TO_GOAL=4
+uint8 PLACE=5

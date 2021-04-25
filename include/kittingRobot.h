@@ -396,10 +396,12 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     move_group_interface->setMaxVelocityScalingFactor(1);
     std::cout << "Initial position of object is : " << initialPose.position.y << std::endl;
     double x_base = getTransform("base_link").transform.translation.x;
+    ariac_2021_submission::pickupStaticObjectFeedback feedback;
+    feedback.feedback = feedback.MOVING_TO_OBJECT;
+    pick_as->publishFeedback(feedback);
     std::cout << "Moving towards object!" << std::endl;
     bool initialFront = (initialPose.position.x > x_base);
     moveTowardsObject(initialPose, initialFront, true);
-    
     // pan tilt : 
     // if +ve and object at back, move to pi (back home) and to y simultaneously?
     // if -ve and object at back, move to -pi (back home) and to y simultaneously?
@@ -459,6 +461,8 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     // move_group_interface->pick(ID);
     // Move to y position first in home config
     std::cout << "Attempting to move to pre_grasp_pose!" << std::endl;
+    feedback.feedback = feedback.PREGRASP;
+    pick_as->publishFeedback(feedback);
     tf2::Quaternion pre_grasp_orientation;
     if (initialFront)
       pre_grasp_orientation = getNetRotation(std::vector<RPY>{RPY(0,M_PI_2,0),RPY(-(rpyFromQuat(initialPose.orientation).z),0,0)});
@@ -494,7 +498,8 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(pre_grasp_pose, grasp_pose_estimate);
     if ( approach_fraction > 0.99 && cartesian_traj_approach.joint_trajectory.points.size()>0 ){
       std::cout << "Cartesian path found for approach!" << std::endl;
-
+      feedback.feedback = feedback.PROBE_AND_PICK;
+      pick_as->publishFeedback(feedback);
       probe(cartesian_traj_approach);
       std::cout << "Exited probe!" << std::endl;
       placeOffsetZ = (pre_grasp_pose.position.z - move_group_interface->getCurrentPose().pose.position.z) - 0.05;
@@ -504,12 +509,15 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
       ROS_ERROR_STREAM("Cartesian path fraction less than 1! Cannot pick!");    
       return false;
     }
+    feedback.feedback = feedback.MOVE_TO_GOAL;
+    pick_as->publishFeedback(feedback);
 
     //  -------------- PLACE -------------------
     x_base = getTransform("base_link").transform.translation.x;
     bool finalFront = (finalPose.position.x > x_base);
     moveTowardsObject(finalPose, finalFront, true);
-    
+    feedback.feedback = feedback.PLACE;
+    pick_as->publishFeedback(feedback);
     std::cout << "Attempting to move to pre_place_pose!" << std::endl;
     tf2::Quaternion pre_place_orientation;
     if (finalFront)
@@ -520,6 +528,7 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     pre_place_pose.orientation = tf2::toMsg(pre_place_orientation);
     pre_place_pose.position = finalPose.position;
     pre_place_pose.position.z += offset;
+
     success = moveToPose(pre_place_pose, true);
     std::cout << "moveToPose completed for pre_place" << std::endl;
     place_pose = pre_place_pose;
