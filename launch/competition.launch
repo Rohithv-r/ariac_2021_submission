@@ -4,7 +4,7 @@
             <arg name="rviz_config" value="$(find kitting_moveit_config)/launch/moveit.rviz"/>
         </include>
     </group> -->
-    <!-- <node name="TaskManager" pkg="ariac_2021_submission" type="TaskManager" output="screen" /> -->
+    <node name="TaskManager" pkg="ariac_2021_submission" type="TaskManager" output="screen" />
     <group ns='ariac/kitting'>
         <node name="kittingRobot" pkg="ariac_2021_submission" type="kittingRobot" output="screen">
             <!-- <remap from="joint_states" to="ariac/kitting/joint_states" />
