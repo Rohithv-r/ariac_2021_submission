@@ -74,7 +74,9 @@ add_service_files(
 add_action_files(
   DIRECTORY action
   FILES
-  pickupStaticObject.action
+  kittingPickUpStaticObject.action
+  kittingPickUpConveyorObject.action
+  inspectionAssembly.action
 )
 
 ## Generate added messages and services with any dependencies listed here
@@ -155,12 +157,16 @@ add_dependencies(first_executable ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_E
 target_link_libraries(first_executable ${catkin_LIBRARIES})
 
 add_executable(TaskManager src/TaskManager.cpp)
-add_dependencies(TaskManager ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(TaskManager ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} ariac_2021_submission_generate_messages_cpp)
 target_link_libraries(TaskManager ${catkin_LIBRARIES})
 
 add_executable(kittingRobot src/kittingRobot.cpp)
 add_dependencies(kittingRobot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} ariac_2021_submission_generate_messages_cpp)
 target_link_libraries(kittingRobot ${catkin_LIBRARIES})
+
+add_executable(gantryRobot src/gantryRobot.cpp)
+add_dependencies(gantryRobot ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} ariac_2021_submission_generate_messages_cpp)
+target_link_libraries(gantryRobot ${catkin_LIBRARIES})
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the

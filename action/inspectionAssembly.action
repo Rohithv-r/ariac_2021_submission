@@ -1,0 +1,18 @@
+# Goal
+string station_id
+nist_gear/Product[] req_products
+---
+# Result
+bool success
+# uint8 ERROR_CODE
+# uint8 GRIPPER_FAULT=6
+# uint8 SUCCESS=7
+---
+# Feedback
+uint8 feedback
+uint8 MOVING_TO_OBJECT=1
+uint8 PREGRASP=2
+uint8 PROBE_AND_PICK=3
+uint8 MOVE_TO_GOAL=4
+uint8 PLACE=5
+uint8 GRIPPER_FAULT=8

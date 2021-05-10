@@ -13,12 +13,13 @@
 #include <moveit_msgs/AttachedCollisionObject.h>
 #include <moveit_msgs/CollisionObject.h>
 #include <moveit_msgs/GetPlanningScene.h>
-#include <moveit_msgs/Grasp.h>
 #include <moveit_msgs/MoveGroupActionFeedback.h>
 
 #include <control_msgs/FollowJointTrajectoryAction.h>
+#include <std_msgs/Time.h>
 #include <ariac_2021_submission/addPlanningSceneCollision.h>
-#include <ariac_2021_submission/pickupStaticObjectAction.h>
+#include <ariac_2021_submission/kittingPickUpStaticObjectAction.h>
+#include <ariac_2021_submission/kittingPickUpConveyorObjectAction.h>
 
 #include <ros/ros.h>
 #include <actionlib/server/simple_action_server.h>
@@ -28,6 +29,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <nist_gear/VacuumGripperControl.h>
+#include <nist_gear/VacuumGripperState.h>
 
 
 
@@ -77,10 +79,10 @@ tf2::Quaternion getNetRotation(std::vector<RPY> rpy_vector){
     return net_quat;
 }
 
-struct moveGroupFeedbackStruct{
+/*struct moveGroupFeedbackStruct{
     int status;
     std::string state, prev_state;
-};
+};*/
 
 
 void log_pose(geometry_msgs::PoseStamped p){
@@ -94,24 +96,28 @@ class kittingRobot{
     explicit kittingRobot(ros::NodeHandlePtr& nh) : _nh(nh) {
       tfListenerPtr = boost::make_shared<tf2_ros::TransformListener>(tfBuffer);
       jointPositionPublisher = _nh->advertise<trajectory_msgs::JointTrajectory>("kitting_arm_controller/command", 10);
-      movingFeedbackSub = _nh->subscribe("move_group/feedback", 3, &kittingRobot::movingFeedbackCallback, this);
+      // movingFeedbackSub = _nh->subscribe("move_group/feedback", 3, &kittingRobot::movingFeedbackCallback, this);
       move_group_interface = std::make_shared<moveit::planning_interface::MoveGroupInterface>(planning_group_name);
       joint_model_group = move_group_interface->getCurrentState()->getJointModelGroup(planning_group_name);
       // advertisePickAndPlaceAction();
       std::cout << "End effector link is : " << move_group_interface->getEndEffectorLink() << std::endl;
-      std::cout << "Press something to move to manual pose" << std::endl;
-      std::cin.get();
+      /*std::cout << "Press something to move to manual pose" << std::endl;
+      std::cin.get();*/
       // std::cout << "Starting pick and place" << std::endl;
+      // std::cout << "Moving to home position!" << std::endl;
+      bool k;
+      gantry_next_goal.position.x = gantry_next_goal.position.y = gantry_next_goal.position.z = -3;
+      gantry_next_goal.orientation = quatFromRPY(0,0,0);
+      gantry_next_goal_sub = _nh->subscribe<geometry_msgs::Pose>("ariac/gantry/next_goal", 3, &kittingRobot::gantryNextGoalCb, this);
+      k = moveToHomeConfig(true, true);
+      std::cout << "Returned from function movetohome. SUCCESS = " << k << std::endl;
+      std::cout << "Initializing stuff!" << std::endl;
       addInitialCollisionObjects();
       advertiseActions();
       advertiseServices();
-      // std::cout << "Moving to home position!" << std::endl;
-      bool k;
-      k = moveToHomeConfig(true, true);
-      std::cout << "Returned from function movetohome. SUCCESS = " << k << std::endl;
-      std::cout << "Waiting for 2 seconds before continuing" << std::endl;
-      ros::Duration d(2);
-      d.sleep();
+      // std::cout << "Waiting for 2 seconds before continuing" << std::endl;
+      // ros::Duration d(2);
+      // d.sleep();
       /*{
         std::vector<double> cur_jvs = move_group_interface->getCurrentJointValues();
         cur_jvs[0] = 1;
@@ -181,26 +187,38 @@ class kittingRobot{
     moveit::planning_interface::MoveGroupInterfacePtr move_group_interface;
     moveit::planning_interface::PlanningSceneInterface planning_scene_interface;
     const robot_state::JointModelGroup* joint_model_group;
+    geometry_msgs::Pose gantry_next_goal;
     moveit_visual_tools::MoveItVisualToolsPtr visual_tools;
     moveit::core::RobotStatePtr current_state;
     tf2_ros::Buffer tfBuffer;
     boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
     ros::ServiceServer addPlanningSceneCollisionService;
     ros::ServiceClient gripperControl;
-    moveGroupFeedbackStruct moveGroupFeedback;
+    // moveGroupFeedbackStruct moveGroupFeedback;
     ros::Subscriber joint_states_sub;
+    ros::Subscriber gantry_next_goal_sub;
     int wrist_1_joint_index;
+    bool objectAttached;
+    // bool finishedProbe;
+    bool gripperMonitoredFJTFailed = false;
     void jointStatesCallback(const sensor_msgs::JointStateConstPtr& joint_state);
-    void movingFeedbackCallback(const moveit_msgs::MoveGroupActionFeedbackConstPtr& msg);
-    boost::shared_ptr<actionlib::SimpleActionServer<ariac_2021_submission::pickupStaticObjectAction>> pick_as;
+    void gantryNextGoalCb(const geometry_msgs::PoseConstPtr& pose);
+    void jointStatesConveyorCallback(const sensor_msgs::JointStateConstPtr& joint_state);
+    // void movingFeedbackCallback(const moveit_msgs::MoveGroupActionFeedbackConstPtr& msg);
+    boost::shared_ptr<actionlib::SimpleActionServer<ariac_2021_submission::kittingPickUpStaticObjectAction>> pick_as;
+    boost::shared_ptr<actionlib::SimpleActionServer<ariac_2021_submission::kittingPickUpConveyorObjectAction>> pick_conveyor_as;
     boost::shared_ptr<actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>> follow_jt_traj_client;
     // ros::ServiceServer moveToJointPositionsService;
     // ros::ServiceServer moveToJointPositionsService;
     std::vector<double> home_config = {0, -1.25, 1.75, 4.2, -1.5, 0.25};   // linear,
+    // std::vector<double> pick_config = { };
     // double actualEffort;
     void fjtFeedbackCb(const control_msgs::FollowJointTrajectoryFeedbackConstPtr& feedback);
     void fjtDoneCb(const actionlib::SimpleClientGoalState& state, const control_msgs::FollowJointTrajectoryResultConstPtr& result);
     void fjtActiveCb();
+    void fjtMonitorFeedbackCb(const control_msgs::FollowJointTrajectoryFeedbackConstPtr& feedback);
+    void fjtMonitorDoneCb(const actionlib::SimpleClientGoalState& state, const control_msgs::FollowJointTrajectoryResultConstPtr& result);
+    void fjtMonitorActiveCb();
     void advertisePickAndPlaceAction();
     void advertiseServices();
     void advertiseActions();
@@ -208,29 +226,39 @@ class kittingRobot{
     bool addPlanningSceneCollisionObject(std::string Id, std::vector<double> Dimensions, geometry_msgs::Pose CollisionPose, collisionAction Action);
     bool addInitialCollisionObjects();
     void sendEmptyTrajectoryToFJTClient();
+    void sendConveyorEmptyTrajectoryToFJTClient();
     geometry_msgs::TransformStamped getTransform(std::string frame_name, std::string origin_frame = "world");
-    std::tuple<double, moveit_msgs::RobotTrajectory> getCartesianPath(geometry_msgs::Pose initial_pose, geometry_msgs::Pose final_pose);
+    std::tuple<double, moveit_msgs::RobotTrajectory> getCartesianPath(geometry_msgs::Pose initial_pose, geometry_msgs::Pose final_pose, bool collisionCheck=false);
     void addPartialCollisionObject(std::string ID, std::vector<double> Dimensions, geometry_msgs::Pose CollisionPose, collisionAction Action);
-    ros::Subscriber movingFeedbackSub;
+    // ros::Subscriber movingFeedbackSub;
     ros::Publisher jointPositionPublisher;
     bool publishToJointPositions(std::vector<double> joint_positions, double time_from_start = 2);  // This is a blocking function!
     bool moveToPose(geometry_msgs::Pose target_pose, bool blocking = false);
     bool moveToJointPositions(std::vector<double>, bool blocking = false);
     bool moveToHomeConfig(bool front = true, bool blocking = false);
     bool moveTowardsObject(geometry_msgs::Pose pose, bool front, bool blocking = false);
+    bool moveTowardsConveyorObject(geometry_msgs::Pose pose, ros::Time lastPoseUpdateTime, double frontDistance = 1);
+    bool moveTowardsObjectWhileMonitoring(geometry_msgs::Pose pose, bool front);
     // void probe(geometry_msgs::Vector3 direction);
     bool PickAndPlace(std::string ID, geometry_msgs::Pose initialPose, geometry_msgs::Pose finalPose, double offset = 0.15);
-    void probe(moveit_msgs::RobotTrajectory trajectory);
-    bool compareCurrentToTargetJointPositions(std::vector<double> target, double tolerance = 0.05);
-    void staticPickAndPlaceCallback(const ariac_2021_submission::pickupStaticObjectGoalConstPtr &goal);
+    bool conveyorPickAndPlace(geometry_msgs::Pose initialPose, ros::Time lastPoseUpdateTime, geometry_msgs::Pose finalPose, double objectHeight, double offset = 0.15);
+    void probe(moveit_msgs::RobotTrajectory trajectory, double vel_scale = 0.1, double acc_scale = 0.1);
+    void probeConveyor(moveit_msgs::RobotTrajectory trajectory, geometry_msgs::Pose pose, ros::Time previousUpdateTime);
+    bool compareCurrentToTargetJointPositions(std::vector<double> target, double tolerance = 0.1);
+    void staticPickAndPlaceCallback(const ariac_2021_submission::kittingPickUpStaticObjectGoalConstPtr &goal);
+    void conveyorPickAndPlaceCallback(const ariac_2021_submission::kittingPickUpConveyorObjectGoalConstPtr &goal);
+    void gripperStateCb(const nist_gear::VacuumGripperStateConstPtr& state);
+    
     
 };
 
 // linear_arm_actuator_joint, shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint
 
 void kittingRobot::advertiseActions(){
-    pick_as = boost::make_shared<actionlib::SimpleActionServer<ariac_2021_submission::pickupStaticObjectAction>>(*_nh, "pick_and_place_static_action", boost::bind(&kittingRobot::staticPickAndPlaceCallback, this, _1), false);
+    pick_as = boost::make_shared<actionlib::SimpleActionServer<ariac_2021_submission::kittingPickUpStaticObjectAction>>(*_nh, "kitting_pick_and_place_static_action", boost::bind(&kittingRobot::staticPickAndPlaceCallback, this, _1), false);
+    pick_conveyor_as = boost::make_shared<actionlib::SimpleActionServer<ariac_2021_submission::kittingPickUpConveyorObjectAction>>(*_nh, "kitting_pick_and_place_conveyor_action", boost::bind(&kittingRobot::conveyorPickAndPlaceCallback, this, _1), false);
     pick_as->start();
+    pick_conveyor_as->start();
     follow_jt_traj_client = boost::make_shared<actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>>("kitting_arm_controller/follow_joint_trajectory");
 }
 
@@ -251,7 +279,7 @@ geometry_msgs::TransformStamped kittingRobot::getTransform(std::string frame_nam
     bool gotTransform = false;
     while (!gotTransform){
       try{
-        transformStamped = tfBuffer.lookupTransform(frame_name, origin_frame,
+        transformStamped = tfBuffer.lookupTransform(origin_frame, frame_name,
                                 ros::Time(0));
         gotTransform = true;
       }
@@ -263,7 +291,7 @@ geometry_msgs::TransformStamped kittingRobot::getTransform(std::string frame_nam
     return transformStamped;
 }
 
-std::tuple<double, moveit_msgs::RobotTrajectory> kittingRobot::getCartesianPath(geometry_msgs::Pose initial_pose, geometry_msgs::Pose final_pose){
+std::tuple<double, moveit_msgs::RobotTrajectory> kittingRobot::getCartesianPath(geometry_msgs::Pose initial_pose, geometry_msgs::Pose final_pose, bool collisionCheck){
     std::vector<geometry_msgs::Pose> waypoints = {initial_pose, final_pose};
     // move_group_interface->setMaxVelocityScalingFactor(0.05);
     moveit_msgs::RobotTrajectory trajectory;
@@ -275,119 +303,6 @@ std::tuple<double, moveit_msgs::RobotTrajectory> kittingRobot::getCartesianPath(
     return std::make_tuple(fraction, trajectory);
 }
 
-void kittingRobot::probe(moveit_msgs::RobotTrajectory trajectory){
-    std::cout << "Probe called" << std::endl;
-    boost::shared_ptr<const sensor_msgs::JointState> msg = ros::topic::waitForMessage<sensor_msgs::JointState>("joint_states", *_nh, ros::Duration(5));
-    wrist_1_joint_index = std::distance(msg->name.begin(), std::find(msg->name.begin(), msg->name.end(), "wrist_1_joint"));
-    robot_trajectory::RobotTrajectory rt(move_group_interface->getRobotModel(), joint_model_group);
-    rt.setRobotTrajectoryMsg(*move_group_interface->getCurrentState(), trajectory);
-    trajectory_processing::IterativeParabolicTimeParameterization iptp;
-    iptp.computeTimeStamps(rt, 0.1, 0.1);
-    // moveit_msgs::RobotTrajectory current_traj;
-    // current_traj.joint_trajectory.header = trajectory.joint_trajectory.header;
-    // current_traj.joint_trajectory.joint_names = trajectory.joint_trajectory.joint_names;
-    // wrist_1_joint_index = std::distance(trajectory.joint_trajectory.joint_names.begin(), std::find(trajectory.joint_trajectory.joint_names.begin(), trajectory.joint_trajectory.joint_names.end(), "wrist_1_joint"));
-    // double desired_effort;
-    joint_states_sub = _nh->subscribe<sensor_msgs::JointState>("joint_states", 10, &kittingRobot::jointStatesCallback, this);
-    control_msgs::FollowJointTrajectoryGoal goal;
-    // goal.goal_time_tolerance = ros::Duration(10);
-    moveit_msgs::RobotTrajectory modified_traj;
-    rt.getRobotTrajectoryMsg(modified_traj);
-    goal.trajectory = modified_traj.joint_trajectory;
-    
-    // for (auto i : goal.trajectory.points){
-    //   i.time_from_start = ros::Duration(i.time_from_start.toSec()*25);
-    // }
-    ros::Rate rate(100);
-    follow_jt_traj_client->sendGoal(goal, boost::bind(&kittingRobot::fjtDoneCb, this, _1, _2), boost::bind(&kittingRobot::fjtActiveCb, this), boost::bind(&kittingRobot::fjtFeedbackCb, this, _1));
-    
-    while (follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::PENDING ||
-    follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::ACTIVE ){
-      ros::spinOnce();
-      rate.sleep();
-    }
-
-    joint_states_sub.shutdown();
-    std::cout << "End of probe!" << std::endl;
-
-    /*current_traj.joint_trajectory.points.resize(2);
-    current_traj.joint_trajectory.points[0] = trajectory.joint_trajectory.points[0];
-    for (std::vector<trajectory_msgs::JointTrajectoryPoint>::iterator i=trajectory.joint_trajectory.points.begin()+1;
-      i!=trajectory.joint_trajectory.points.end(); i++){
-        current_traj.joint_trajectory.points[1] = *i;
-        // desired_effort = (*i).effort[wrist_1_joint_index];
-        goal.trajectory = current_traj.joint_trajectory;
-        // follow_jt_traj_client->sendGoalAndWait(goal);
-        // std::cout << "Goal done!" << std::endl;
-        follow_jt_traj_client->sendGoal(goal, boost::bind(&kittingRobot::fjtDoneCb, this, _1, _2), boost::bind(&kittingRobot::fjtActiveCb, this), boost::bind(&kittingRobot::fjtFeedbackCb, this, _1));
-        follow_jt_traj_client->waitForResult();
-        std::cout << "Before while" << std::endl;
-        while (follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::PENDING ||
-        follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::ACTIVE ){
-          std::cout << "Actual state inside while is : " << follow_jt_traj_client->getState().toString().c_str() << std::endl;
-          // ros::spinOnce();
-        }
-        std::cout << "Actual state After while is : " << follow_jt_traj_client->getState().toString().c_str() << std::endl;
-        std::cout << "After while" << std::endl;
-        // ros::spin();
-      // call follow_jt_traj action 
-    }*/
-    // move_group_interface->execute(trajectory);
-}
-
-void kittingRobot::fjtFeedbackCb(const control_msgs::FollowJointTrajectoryFeedbackConstPtr& feedback){
-    // std::cout << "Diff between desired and actual joint efforts = " << abs(feedback->error.effort[wrist_1_joint_index]) << std::endl;
-    
-}
-
-void kittingRobot::sendEmptyTrajectoryToFJTClient(){
-    control_msgs::FollowJointTrajectoryGoal goal;
-    goal.trajectory.joint_names = move_group_interface->getJointNames();
-    goal.trajectory.points.resize(1);
-    goal.trajectory.points[0].positions = move_group_interface->getCurrentJointValues();
-    goal.trajectory.points[0].positions[2] -= 0.002;
-    goal.trajectory.points[0].positions[4] += 0.05;
-    // goal.trajectory.points[0].positions[2] -= 0.01;
-    goal.trajectory.points[0].velocities.resize(goal.trajectory.joint_names.size(), 0);
-    goal.trajectory.points[0].time_from_start = ros::Duration(0.05);
-    follow_jt_traj_client->sendGoal(goal);
-}
-
-void kittingRobot::fjtDoneCb(const actionlib::SimpleClientGoalState& state, const control_msgs::FollowJointTrajectoryResultConstPtr& result){
-    std::cout << "FJT finished with state : " << state.toString().c_str() << std::endl;
-    std::cout << "Result is : " << (result->error_code == result->SUCCESSFUL) << std::endl;
-
-}
-
-void kittingRobot::fjtActiveCb(){
-    std::cout << "FJT Goal just went active!" << std::endl;
-}
-
-
-void kittingRobot::staticPickAndPlaceCallback(const ariac_2021_submission::pickupStaticObjectGoalConstPtr &goal){
-    std::cout << "staticPickAndPlace callback called!" << std::endl;
-    ariac_2021_submission::pickupStaticObjectResult result;
-    result.success = PickAndPlace(goal->ID, goal->initial_pose, goal->final_pose);
-    std::cout << "Setting action as succeeded" << std::endl;
-    pick_as->setSucceeded(result);
-    // goal->
-}
-
-bool kittingRobot::moveTowardsObject(geometry_msgs::Pose pose, bool front, bool blocking){
-    std::vector<double> joint_group_positions = move_group_interface->getCurrentJointValues();
-    std::vector<double> config;
-    config.push_back(pose.position.y);
-    if (front)
-      config.insert(config.end(), home_config.begin(), home_config.end());
-    else {
-      config.push_back(M_PI);
-      config.insert(config.end(), home_config.begin()+1, home_config.end());
-    }
-    bool success = moveToJointPositions(config, blocking);
-    return success;
-}
-
-
 // for picking : Move towards object - (pan, y). pre_grasp_pose.
 // Get base_link TF. Find if object is at front/back of robot.
 // Move to home config front. 
@@ -396,12 +311,12 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     move_group_interface->setMaxVelocityScalingFactor(1);
     std::cout << "Initial position of object is : " << initialPose.position.y << std::endl;
     double x_base = getTransform("base_link").transform.translation.x;
-    ariac_2021_submission::pickupStaticObjectFeedback feedback;
+    ariac_2021_submission::kittingPickUpStaticObjectFeedback feedback;
     feedback.feedback = feedback.MOVING_TO_OBJECT;
     pick_as->publishFeedback(feedback);
-    std::cout << "Moving towards object!" << std::endl;
+    // _______std::cout << "Moving towards object!" << std::endl;
     bool initialFront = (initialPose.position.x > x_base);
-    moveTowardsObject(initialPose, initialFront, true);
+    success = moveTowardsObject(initialPose, initialFront, true);
     // pan tilt : 
     // if +ve and object at back, move to pi (back home) and to y simultaneously?
     // if -ve and object at back, move to -pi (back home) and to y simultaneously?
@@ -460,7 +375,8 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     // move_group_interface->setSupportSurfaceName(supporting_surface);
     // move_group_interface->pick(ID);
     // Move to y position first in home config
-    std::cout << "Attempting to move to pre_grasp_pose!" << std::endl;
+    // _________std::cout << "Attempting to move to pre_grasp_pose!" << std::endl;
+    ros::Subscriber gripper_sub = _nh->subscribe("arm/gripper/state", 5, &kittingRobot::gripperStateCb, this);
     feedback.feedback = feedback.PREGRASP;
     pick_as->publishFeedback(feedback);
     tf2::Quaternion pre_grasp_orientation;
@@ -490,32 +406,67 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     gripper_srv.request.enable = true;
     if (!gripperControl.call(gripper_srv)){
       ROS_ERROR_STREAM("Unable to turn on Gripper!");
-    }
-    grasp_pose_estimate = pre_grasp_pose;
-    grasp_pose_estimate.position.z -= offset;
-    moveit_msgs::RobotTrajectory cartesian_traj_approach;
-    double approach_fraction, placeOffsetZ;
-    std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(pre_grasp_pose, grasp_pose_estimate);
-    if ( approach_fraction > 0.99 && cartesian_traj_approach.joint_trajectory.points.size()>0 ){
-      std::cout << "Cartesian path found for approach!" << std::endl;
-      feedback.feedback = feedback.PROBE_AND_PICK;
-      pick_as->publishFeedback(feedback);
-      probe(cartesian_traj_approach);
-      std::cout << "Exited probe!" << std::endl;
-      placeOffsetZ = (pre_grasp_pose.position.z - move_group_interface->getCurrentPose().pose.position.z) - 0.05;
-      success = moveToPose(pre_grasp_pose, true);
-    }
-    else{
-      ROS_ERROR_STREAM("Cartesian path fraction less than 1! Cannot pick!");    
       return false;
     }
+    grasp_pose_estimate = pre_grasp_pose;
+    grasp_pose_estimate.position.z -= (offset - 0.01);
+    moveit_msgs::RobotTrajectory cartesian_traj_approach;
+    double approach_fraction, placeOffsetZ;
+    feedback.feedback = feedback.PROBE_AND_PICK;
+    pick_as->publishFeedback(feedback);
+    int count = 0;
+    while (!objectAttached && count < 3){
+      std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(pre_grasp_pose, grasp_pose_estimate);
+      if ( approach_fraction > 0.99 && cartesian_traj_approach.joint_trajectory.points.size()>0 ){
+        std::cout << "Cartesian path found for approach!" << std::endl;
+        probe(cartesian_traj_approach);
+        std::cout << "Exited probe!" << std::endl;
+        placeOffsetZ = (pre_grasp_pose.position.z - move_group_interface->getCurrentPose().pose.position.z) - 0.05;
+        success = moveToPose(pre_grasp_pose, true);
+      }
+      else{
+        ROS_ERROR_STREAM("Cartesian path fraction less than 1! Cannot pick!");
+
+        return false;
+      }
+      if (objectAttached){
+        std::vector<double> dimensions;
+        geometry_msgs::Pose collision_pose;
+        dimensions.resize(3);
+        geometry_msgs::TransformStamped Transform = getTransform("gantry_arm_vacuum_gripper_link");
+        collision_pose.position.x = Transform.transform.translation.x;
+        collision_pose.position.y = Transform.transform.translation.y;
+        collision_pose.position.z = Transform.transform.translation.z - 0.064;
+        std::string id = "temp_collision";
+        dimensions[0] = 0.128;
+        dimensions[1] = 0.128;
+        dimensions[2] = 0.128;
+        collision_pose.orientation.w = 1;
+        addPlanningSceneCollisionObject(id, dimensions, collision_pose, collisionAction::ADD);
+        move_group_interface->attachObject("temp_collision");
+      }
+      count++;
+    }
+    // Start a callback to see if object remains attached to the gripper
+
+    if (pick_as->isPreemptRequested() || !_nh->ok()){
+        ROS_INFO("Static pick and place preempted");
+        pick_as->setPreempted();
+        return false;
+    }
+
     feedback.feedback = feedback.MOVE_TO_GOAL;
     pick_as->publishFeedback(feedback);
 
     //  -------------- PLACE -------------------
     x_base = getTransform("base_link").transform.translation.x;
     bool finalFront = (finalPose.position.x > x_base);
-    moveTowardsObject(finalPose, finalFront, true);
+    // moveTowardsObject(finalPose, finalFront, true);
+    if (!moveTowardsObjectWhileMonitoring(finalPose, finalFront) && !objectAttached){
+      objectAttached = true;
+      gripper_sub.shutdown();
+      return false;
+    }
     feedback.feedback = feedback.PLACE;
     pick_as->publishFeedback(feedback);
     std::cout << "Attempting to move to pre_place_pose!" << std::endl;
@@ -527,10 +478,28 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
     geometry_msgs::Pose pre_place_pose, place_pose;
     pre_place_pose.orientation = tf2::toMsg(pre_place_orientation);
     pre_place_pose.position = finalPose.position;
-    pre_place_pose.position.z += offset;
+    success = moveTowardsObject(finalPose, finalFront, true);
+    pre_place_pose.position.z += (offset - placeOffsetZ + 0.01);
 
     success = moveToPose(pre_place_pose, true);
-    std::cout << "moveToPose completed for pre_place" << std::endl;
+
+    planning_scene_interface.removeCollisionObjects(std::vector<std::string>{"temp_collision"});
+    
+    gripper_srv.request.enable = false;
+    if (!gripperControl.call(gripper_srv)){
+      ROS_ERROR_STREAM("Unable to turn off Gripper!");
+      return false;
+    }
+
+    success = moveToHomeConfig(finalFront, false);
+
+    // if (pick_as->isPreemptRequested() || !_nh->ok()){
+    //     ROS_INFO("Static pick and place preempted");
+    //     pick_as->setPreempted();
+    //     return false;
+    // }
+
+    /*std::cout << "moveToPose completed for pre_place" << std::endl;
     place_pose = pre_place_pose;
     place_pose.position.z -= placeOffsetZ;
     std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(pre_place_pose, place_pose);
@@ -542,12 +511,471 @@ bool kittingRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose,
         ROS_ERROR_STREAM("Unable to turn off Gripper!");
       }
       // success = moveToPose(pre_place_pose, true);
-      success = moveToHomeConfig(finalFront);
+      success = moveToHomeConfig(finalFront, true);
     }
+    gripper_sub.shutdown();*/
     // geometry_msgs::PoseStamped actual_grasp_pose = move_group_interface->getCurrentPose();
     // std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(actual_grasp_pose.pose, pre_grasp_pose);
     // retract();
 
+    return success;
+}
+
+bool kittingRobot::conveyorPickAndPlace(geometry_msgs::Pose initialPose, ros::Time lastPoseUpdateTime, geometry_msgs::Pose finalPose, double objectHeight, double offset){
+    bool success;
+    move_group_interface->setMaxVelocityScalingFactor(1);
+    
+    // std::cout << "Initial position of object is : " << initialPose.position.y << std::endl;
+    double x_base = getTransform("base_link").transform.translation.x;
+    ariac_2021_submission::kittingPickUpConveyorObjectFeedback feedback;
+    feedback.feedback = feedback.MOVING_TO_OBJECT;
+    pick_conveyor_as->publishFeedback(feedback);
+    // _______std::cout << "Moving towards object!" << std::endl;
+    // initialPose.position.y -= 0.2*(ros::Time::now() - lastPoseUpdateTime).toSec();
+    success = moveTowardsConveyorObject(initialPose, lastPoseUpdateTime, 1);
+
+    if (pick_conveyor_as->isPreemptRequested() || !_nh->ok()){
+      ROS_INFO("Conveyor pick and place preempted");
+      pick_conveyor_as->setPreempted();
+      return false;
+    }
+    
+    ros::Subscriber gripper_sub = _nh->subscribe("arm/gripper/state", 5, &kittingRobot::gripperStateCb, this);
+    feedback.feedback = feedback.PREGRASP;
+    pick_conveyor_as->publishFeedback(feedback);
+    tf2::Quaternion pre_grasp_orientation;
+    // if (initialFront)
+    pre_grasp_orientation = getNetRotation(std::vector<RPY>{RPY(0,M_PI_2,0),RPY(-(rpyFromQuat(initialPose.orientation).z),0,0)});
+    // else
+    //   pre_grasp_orientation = getNetRotation(std::vector<RPY>{RPY(0,M_PI_2,0),RPY(-(rpyFromQuat(initialPose.orientation).z + M_PI),0,0)});  // rotation mult (0,pi/2,0) and (-roll,0,0)
+    geometry_msgs::Pose pre_grasp_pose, grasp_pose_estimate;
+    pre_grasp_pose.orientation = tf2::toMsg(pre_grasp_orientation);
+    pre_grasp_pose.position = initialPose.position;
+    pre_grasp_pose.position.y = initialPose.position.y - 0.2*(ros::Time::now() - lastPoseUpdateTime).toSec() - 0.6;
+    pre_grasp_pose.position.z += (double(objectHeight)/2 + 0.05);
+    success = moveToPose(pre_grasp_pose, true);
+    if (pick_as->isPreemptRequested() || !_nh->ok()){
+        ROS_INFO("Static pick and place preempted");
+        pick_as->setPreempted();
+        return false;
+    }
+    
+    std::cout << "moveToPose completed for pre_grasp" << std::endl;
+    
+    nist_gear::VacuumGripperControl gripper_srv;
+    gripper_srv.request.enable = true;
+    if (!gripperControl.call(gripper_srv)){
+      ROS_ERROR_STREAM("Unable to turn on Gripper!");
+      return false;
+    }
+    grasp_pose_estimate = pre_grasp_pose;
+    grasp_pose_estimate.position.z -= 0.051;
+    moveit_msgs::RobotTrajectory cartesian_traj_approach;
+    double approach_fraction, placeOffsetZ;
+    // while ( grasp_pose_estimate.position.y - (initialPose.position.y - 0.2*(ros::Time::now()-lastPoseUpdateTime).toSec()) > 0.4){
+    //   ros::spinOnce();
+    // }
+    std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(pre_grasp_pose, grasp_pose_estimate, false);
+    int count = 0;
+    while (!objectAttached && count < 3){
+      if (count > 0){
+        pre_grasp_pose.position.y = initialPose.position.y - 0.2*(ros::Time::now() - lastPoseUpdateTime).toSec() - 0.4;
+        if (pre_grasp_pose.position.y < -4.3){
+          ROS_ERROR_STREAM("Object crossed conveyor! Cannot pick!");
+          return false;
+        }
+        success = moveToPose(pre_grasp_pose, true);
+        grasp_pose_estimate = pre_grasp_pose;
+        grasp_pose_estimate.position.z -= 0.051;
+        std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(pre_grasp_pose, grasp_pose_estimate, false);
+      }
+      if ( approach_fraction > 0.99 && cartesian_traj_approach.joint_trajectory.points.size()>0 ){
+        std::cout << "Cartesian path found for approach!" << std::endl;
+        feedback.feedback = feedback.PROBE_AND_PICK;
+        pick_conveyor_as->publishFeedback(feedback);
+        probeConveyor(cartesian_traj_approach, initialPose, lastPoseUpdateTime);
+        std::cout << "Exited probe!" << std::endl;
+        // placeOffsetZ = (pre_grasp_pose.position.z - move_group_interface->getCurrentPose().pose.position.z) - 0.05;
+        
+        // success = moveToPose(pre_grasp_pose, true);
+        // success = moveToHomeConfig(true, true);
+      }
+      else{
+        ROS_ERROR_STREAM("Cartesian path fraction less than 1! Cannot pick!");
+
+        return false;
+      }
+      if (objectAttached){
+        std::vector<double> dimensions;
+        geometry_msgs::Pose collision_pose;
+        dimensions.resize(3);
+        geometry_msgs::TransformStamped Transform = getTransform("gantry_arm_vacuum_gripper_link");
+        collision_pose.position.x = Transform.transform.translation.x;
+        collision_pose.position.y = Transform.transform.translation.y;
+        collision_pose.position.z = Transform.transform.translation.z - 0.064;
+        std::string id = "temp_collision";
+        dimensions[0] = 0.128;
+        dimensions[1] = 0.128;
+        dimensions[2] = 0.128;
+        collision_pose.orientation.w = 1;
+        addPlanningSceneCollisionObject(id, dimensions, collision_pose, collisionAction::ADD);
+        move_group_interface->attachObject("temp_collision");
+        ros::Duration(0.5).sleep();
+      }
+      count++;
+    }
+    success = moveToHomeConfig(true, true);
+    
+    if (count > 3 || !objectAttached){
+      ROS_ERROR_STREAM("Either couldn't pick object or object de-attached");
+      return false;
+    }
+
+    if (pick_conveyor_as->isPreemptRequested() || !_nh->ok()){
+        ROS_INFO("Static pick and place preempted");
+        pick_conveyor_as->setPreempted();
+        return false;
+    }
+
+    feedback.feedback = feedback.MOVE_TO_GOAL;
+    pick_conveyor_as->publishFeedback(feedback);
+
+    //  -------------- PLACE -------------------
+    x_base = getTransform("base_link").transform.translation.x;
+    bool finalFront = (finalPose.position.x > x_base);
+    // moveTowardsObject(finalPose, finalFront, true);
+    if (!moveTowardsObjectWhileMonitoring(finalPose, finalFront) && !objectAttached){
+      objectAttached = true;
+      gripper_sub.shutdown();
+      return false;
+    }
+    feedback.feedback = feedback.PLACE;
+    pick_conveyor_as->publishFeedback(feedback);
+    std::cout << "Attempting to move to pre_place_pose!" << std::endl;
+    tf2::Quaternion pre_place_orientation;
+    if (finalFront)
+      pre_place_orientation = getNetRotation(std::vector<RPY>{RPY(0,M_PI_2,0)});
+    else
+      pre_place_orientation = getNetRotation(std::vector<RPY>{RPY(0,M_PI_2,0),RPY(-(M_PI),0,0)});  // rotation mult (0,pi/2,0) and (-roll,0,0)
+    geometry_msgs::Pose pre_place_pose, place_pose;
+    pre_place_pose.orientation = tf2::toMsg(pre_place_orientation);
+    pre_place_pose.position = finalPose.position;
+    // success = moveToPose(finalPose, finalFront, true);
+    // pre_place_pose.position.z += (double(objectHeight)/2 + 0.05);
+    pre_place_pose.position.z += (double(objectHeight)/2 + 0.05);
+
+    success = moveToPose(pre_place_pose, true);
+    planning_scene_interface.removeCollisionObjects(std::vector<std::string>{"temp_collision"});
+    gripper_srv.request.enable = false;
+    if (!gripperControl.call(gripper_srv)){
+      ROS_ERROR_STREAM("Unable to turn off Gripper!");
+      return false;
+    }
+
+    success = moveToHomeConfig(finalFront, false);
+    // geometry_msgs::PoseStamped actual_grasp_pose = move_group_interface->getCurrentPose();
+    // std::tie(approach_fraction, cartesian_traj_approach) = getCartesianPath(actual_grasp_pose.pose, pre_grasp_pose);
+    // retract();
+    
+    return success;
+}
+
+void kittingRobot::probe(moveit_msgs::RobotTrajectory trajectory, double vel_scale, double acc_scale){
+    // finishedProbe = false;
+    std::cout << "Probe called" << std::endl;
+    boost::shared_ptr<const sensor_msgs::JointState> msg = ros::topic::waitForMessage<sensor_msgs::JointState>("joint_states", *_nh, ros::Duration(5));
+    wrist_1_joint_index = std::distance(msg->name.begin(), std::find(msg->name.begin(), msg->name.end(), "wrist_1_joint"));
+    robot_trajectory::RobotTrajectory rt(move_group_interface->getRobotModel(), joint_model_group);
+    rt.setRobotTrajectoryMsg(*move_group_interface->getCurrentState(), trajectory);
+    trajectory_processing::IterativeParabolicTimeParameterization iptp;
+    iptp.computeTimeStamps(rt, vel_scale, acc_scale);
+    // moveit_msgs::RobotTrajectory current_traj;
+    // current_traj.joint_trajectory.header = trajectory.joint_trajectory.header;
+    // current_traj.joint_trajectory.joint_names = trajectory.joint_trajectory.joint_names;
+    // wrist_1_joint_index = std::distance(trajectory.joint_trajectory.joint_names.begin(), std::find(trajectory.joint_trajectory.joint_names.begin(), trajectory.joint_trajectory.joint_names.end(), "wrist_1_joint"));
+    // double desired_effort;
+    joint_states_sub = _nh->subscribe<sensor_msgs::JointState>("joint_states", 10, &kittingRobot::jointStatesCallback, this);
+    control_msgs::FollowJointTrajectoryGoal goal;
+    // goal.goal_time_tolerance = ros::Duration(10);
+    moveit_msgs::RobotTrajectory modified_traj;
+    rt.getRobotTrajectoryMsg(modified_traj);
+    goal.trajectory = modified_traj.joint_trajectory;
+    
+    // for (auto i : goal.trajectory.points){
+    //   i.time_from_start = ros::Duration(i.time_from_start.toSec()*25);
+    // }
+    // ros::Rate rate(100);
+    follow_jt_traj_client->sendGoal(goal, boost::bind(&kittingRobot::fjtDoneCb, this, _1, _2), boost::bind(&kittingRobot::fjtActiveCb, this), boost::bind(&kittingRobot::fjtFeedbackCb, this, _1));
+    
+    follow_jt_traj_client->waitForResult();
+    // while(!finishedProbe){
+    //   ros::spinOnce();
+    // }
+    std::cout << "FJT either cancelled or succeeded inside probe! LOL!" << std::endl;
+    // while (follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::PENDING ||
+    // follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::ACTIVE ){
+    //   ros::spinOnce();
+    //   rate.sleep();
+    // }
+
+    joint_states_sub.shutdown();
+    std::cout << "End of probe!" << std::endl;
+
+    /*current_traj.joint_trajectory.points.resize(2);
+    current_traj.joint_trajectory.points[0] = trajectory.joint_trajectory.points[0];
+    for (std::vector<trajectory_msgs::JointTrajectoryPoint>::iterator i=trajectory.joint_trajectory.points.begin()+1;
+      i!=trajectory.joint_trajectory.points.end(); i++){
+        current_traj.joint_trajectory.points[1] = *i;
+        // desired_effort = (*i).effort[wrist_1_joint_index];
+        goal.trajectory = current_traj.joint_trajectory;
+        // follow_jt_traj_client->sendGoalAndWait(goal);
+        // std::cout << "Goal done!" << std::endl;
+        follow_jt_traj_client->sendGoal(goal, boost::bind(&kittingRobot::fjtDoneCb, this, _1, _2), boost::bind(&kittingRobot::fjtActiveCb, this), boost::bind(&kittingRobot::fjtFeedbackCb, this, _1));
+        follow_jt_traj_client->waitForResult();
+        std::cout << "Before while" << std::endl;
+        while (follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::PENDING ||
+        follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::ACTIVE ){
+          std::cout << "Actual state inside while is : " << follow_jt_traj_client->getState().toString().c_str() << std::endl;
+          // ros::spinOnce();
+        }
+        std::cout << "Actual state After while is : " << follow_jt_traj_client->getState().toString().c_str() << std::endl;
+        std::cout << "After while" << std::endl;
+        // ros::spin();
+      // call follow_jt_traj action 
+    }*/
+    // move_group_interface->execute(trajectory);
+}
+
+
+void kittingRobot::probeConveyor(moveit_msgs::RobotTrajectory trajectory, geometry_msgs::Pose pose, ros::Time previousUpdateTime){
+    std::cout << "Conveyor probe called" << std::endl;
+    boost::shared_ptr<const sensor_msgs::JointState> msg = ros::topic::waitForMessage<sensor_msgs::JointState>("joint_states", *_nh, ros::Duration(5));
+    wrist_1_joint_index = std::distance(msg->name.begin(), std::find(msg->name.begin(), msg->name.end(), "wrist_1_joint"));
+    robot_trajectory::RobotTrajectory rt(move_group_interface->getRobotModel(), joint_model_group);
+    rt.setRobotTrajectoryMsg(*move_group_interface->getCurrentState(), trajectory);
+    trajectory_processing::IterativeParabolicTimeParameterization iptp;
+    double current_Y = pose.position.y - 0.2*(ros::Time::now()-previousUpdateTime).toSec();
+    double time_remaining = (current_Y - move_group_interface->getCurrentPose().pose.position.y)/0.2 + 0.2;
+    double vel_scale = trajectory.joint_trajectory.points[trajectory.joint_trajectory.points.size()].time_from_start.toSec()/time_remaining;
+    iptp.computeTimeStamps(rt, vel_scale);
+    // moveit_msgs::RobotTrajectory current_traj;
+    // current_traj.joint_trajectory.header = trajectory.joint_trajectory.header;
+    // current_traj.joint_trajectory.joint_names = trajectory.joint_trajectory.joint_names;
+    // wrist_1_joint_index = std::distance(trajectory.joint_trajectory.joint_names.begin(), std::find(trajectory.joint_trajectory.joint_names.begin(), trajectory.joint_trajectory.joint_names.end(), "wrist_1_joint"));
+    // double desired_effort;
+    joint_states_sub = _nh->subscribe<sensor_msgs::JointState>("joint_states", 10, &kittingRobot::jointStatesConveyorCallback, this);
+    control_msgs::FollowJointTrajectoryGoal goal;
+    // goal.goal_time_tolerance = ros::Duration(10);
+    moveit_msgs::RobotTrajectory modified_traj;
+    rt.getRobotTrajectoryMsg(modified_traj);
+    goal.trajectory = modified_traj.joint_trajectory;
+    double traversalTime = modified_traj.joint_trajectory.points[modified_traj.joint_trajectory.points.size()-1].time_from_start.toSec();
+    
+    while ( ((pose.position.y - 0.2*(ros::Time::now()-previousUpdateTime).toSec()) - move_group_interface->getCurrentPose().pose.position.y ) > (0.2)*traversalTime){
+      // std::cout << "Waiting to probe down!" << std::endl;
+      ros::spinOnce();
+    }
+    // for (auto i : goal.trajectory.points){
+    //   i.time_from_start = ros::Duration(i.time_from_start.toSec()*25);
+    // }
+    // ros::Rate rate(100);
+    follow_jt_traj_client->sendGoal(goal, boost::bind(&kittingRobot::fjtDoneCb, this, _1, _2), boost::bind(&kittingRobot::fjtActiveCb, this), boost::bind(&kittingRobot::fjtFeedbackCb, this, _1));
+    
+    follow_jt_traj_client->waitForResult();
+    // while(!finishedProbe){
+    //   ros::spinOnce();
+    // }
+    std::cout << "FJT either cancelled or succeeded inside probe! LOL!" << std::endl;
+    // while (follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::PENDING ||
+    // follow_jt_traj_client->getState() == actionlib::SimpleClientGoalState::ACTIVE ){
+    //   ros::spinOnce();
+    //   rate.sleep();
+    // }
+
+    joint_states_sub.shutdown();
+    std::cout << "End of probe!" << std::endl;
+}
+
+
+void kittingRobot::sendEmptyTrajectoryToFJTClient(){
+    control_msgs::FollowJointTrajectoryGoal goal;
+    goal.trajectory.joint_names = move_group_interface->getJointNames();
+    goal.trajectory.points.resize(1);
+    goal.trajectory.points[0].positions = move_group_interface->getCurrentJointValues();
+    goal.trajectory.points[0].positions[2] -= 0.001;
+    // goal.trajectory.points[0].positions[3] += 0.0005;
+    goal.trajectory.points[0].positions[4] += 0.008;   // prev 0.03
+    goal.trajectory.points[0].effort.resize(goal.trajectory.joint_names.size());
+    goal.trajectory.points[0].effort[4] = 3;
+    // goal.trajectory.points[0].positions[2] -= 0.01;
+    goal.trajectory.points[0].velocities.resize(goal.trajectory.joint_names.size(), 0);
+    goal.trajectory.points[0].time_from_start = ros::Duration(0.1);
+    follow_jt_traj_client->sendGoal(goal);
+}
+
+void kittingRobot::sendConveyorEmptyTrajectoryToFJTClient(){
+    // ros::Duration(0.1).sleep();
+    control_msgs::FollowJointTrajectoryGoal goal;
+    goal.trajectory.joint_names = move_group_interface->getJointNames();
+    goal.trajectory.points.resize(2);
+    goal.trajectory.points[0].positions = move_group_interface->getCurrentJointValues();
+    // goal.trajectory.points[0].positions[2] += 0.001;
+    // goal.trajectory.points[0].positions[3] += 0.0005;
+    // goal.trajectory.points[0].positions[4] += 0.012;   // prev 0.03
+    goal.trajectory.points[0].effort.resize(goal.trajectory.joint_names.size());
+    goal.trajectory.points[0].effort[4] = 3;
+    // goal.trajectory.points[0].positions[2] -= 0.001;
+    goal.trajectory.points[0].positions[5] -= 0.15;
+    goal.trajectory.points[0].velocities.resize(goal.trajectory.joint_names.size(), 0);
+    goal.trajectory.points[0].time_from_start = ros::Duration(0.1);
+
+    goal.trajectory.points[1].positions = goal.trajectory.points[0].positions;
+    goal.trajectory.points[1].positions[2] -= 0.03;
+    // goal.trajectory.points[0].positions[3] += 0.0005;
+    // goal.trajectory.points[1].positions[4] += 0.008;   // prev 0.03
+    goal.trajectory.points[1].time_from_start = ros::Duration(0.35);
+    follow_jt_traj_client->sendGoal(goal);
+}
+
+
+void kittingRobot::fjtFeedbackCb(const control_msgs::FollowJointTrajectoryFeedbackConstPtr& feedback){
+    // std::cout << "Diff between desired and actual joint efforts = " << abs(feedback->error.effort[wrist_1_joint_index]) << std::endl;
+    
+}
+
+void kittingRobot::fjtDoneCb(const actionlib::SimpleClientGoalState& state, const control_msgs::FollowJointTrajectoryResultConstPtr& result){
+    std::cout << "FJT finished with state : " << state.toString().c_str() << std::endl;
+    std::cout << "Result is : " << (result->error_code == result->SUCCESSFUL) << std::endl;
+
+}
+
+void kittingRobot::fjtActiveCb(){
+    std::cout << "FJT Goal just went active!" << std::endl;
+}
+
+void kittingRobot::fjtMonitorFeedbackCb(const control_msgs::FollowJointTrajectoryFeedbackConstPtr& feedback){
+    // std::cout << "Diff between desired and actual joint efforts = " << abs(feedback->error.effort[wrist_1_joint_index]) << std::endl;
+    if (objectAttached){
+      std::cout << "FJT Monitor feedback : Attached!" << std::endl;
+      // also track gantry TF
+    }
+    else{
+      follow_jt_traj_client->cancelGoal();
+      ariac_2021_submission::kittingPickUpStaticObjectFeedback feedback;
+      feedback.feedback = feedback.GRIPPER_FAULT;
+      pick_as->publishFeedback(feedback);
+      gripperMonitoredFJTFailed = true;
+      follow_jt_traj_client->cancelGoal();
+      sendEmptyTrajectoryToFJTClient();
+    }
+}
+
+void kittingRobot::fjtMonitorDoneCb(const actionlib::SimpleClientGoalState& state, const control_msgs::FollowJointTrajectoryResultConstPtr& result){
+    std::cout << "FJT Monitor finished with state : " << state.toString().c_str() << std::endl;
+    std::cout << "Result is : " << (result->error_code == result->SUCCESSFUL) << std::endl;
+
+}
+
+void kittingRobot::fjtMonitorActiveCb(){
+    std::cout << "FJT Monitor Goal just went active!" << std::endl;
+}
+
+void kittingRobot::gripperStateCb(const nist_gear::VacuumGripperStateConstPtr& state){
+    objectAttached = state->attached;
+}
+
+
+void kittingRobot::staticPickAndPlaceCallback(const ariac_2021_submission::kittingPickUpStaticObjectGoalConstPtr &goal){
+    std::cout << "staticPickAndPlace callback called!" << std::endl;
+    ariac_2021_submission::kittingPickUpStaticObjectResult result;
+    result.success = PickAndPlace(goal->ID, goal->initial_pose, goal->final_pose);
+    std::cout << "Setting spp action result!" << std::endl;
+    // pick_as->setSucceeded(result);
+    if (result.success)
+      pick_as->setSucceeded(result);
+    else
+      pick_as->setAborted(result);
+    // goal->
+}
+
+void kittingRobot::conveyorPickAndPlaceCallback(const ariac_2021_submission::kittingPickUpConveyorObjectGoalConstPtr &goal){
+    std::cout << "conveyorPickAndPlace callback called!" << std::endl;
+    ariac_2021_submission::kittingPickUpConveyorObjectResult result;
+    result.success = conveyorPickAndPlace(goal->initial_pose, goal->lastPoseUpdateTime, goal->final_pose, goal->objectHeight);
+    std::cout << "Setting cpp action result!" << std::endl;
+    if (result.success){
+      pick_conveyor_as->setSucceeded(result);
+      std::cout << "Yess! Setting as succeeded!" << std::endl;
+    }
+    else{
+      pick_conveyor_as->setAborted(result);
+      std::cout << "Setting as aborted" << std::endl;
+    }
+}
+
+bool kittingRobot::moveTowardsObject(geometry_msgs::Pose pose, bool front, bool blocking){
+    std::vector<double> joint_group_positions = move_group_interface->getCurrentJointValues();
+    std::vector<double> config;
+    config.push_back(pose.position.y);
+    if (front)
+      config.insert(config.end(), home_config.begin(), home_config.end());
+    else {
+      config.push_back(M_PI);
+      config.insert(config.end(), home_config.begin()+1, home_config.end());
+    }
+    bool success = moveToJointPositions(config, blocking);
+    return success;
+}
+
+bool kittingRobot::moveTowardsConveyorObject(geometry_msgs::Pose pose, ros::Time lastPoseUpdateTime, double frontDistance){
+    std::vector<double> joint_group_positions = move_group_interface->getCurrentJointValues();
+    std::vector<double> config;
+    double dest_Y = pose.position.y;
+    moveToHomeConfig(true, true);
+    dest_Y -= ( 0.2*(ros::Time::now()-lastPoseUpdateTime).toSec() + frontDistance);  // +0.75 previously
+    config.push_back(dest_Y);
+    config.insert(config.end(), home_config.begin(), home_config.end());
+    // bool success = publishToJointPositions(config, 1);
+    move_group_interface->setMaxAccelerationScalingFactor(1);
+    move_group_interface->setMaxVelocityScalingFactor(1);
+    bool success = moveToJointPositions(config, true);
+    // if (front)
+      // config.insert(config.end(), home_config.begin(), home_config.end());
+    // else {
+    //   config.push_back(M_PI);
+    //   config.insert(config.end(), home_config.begin()+1, home_config.end());
+    // }
+    // bool success = moveToJointPositions(config, blocking);
+    std::cout << "moveTowardsConvObject returning success = " << success << std::endl;
+    return success;
+}
+
+bool kittingRobot::moveTowardsObjectWhileMonitoring(geometry_msgs::Pose pose, bool front){
+    std::vector<double> joint_group_positions = move_group_interface->getCurrentJointValues();
+    std::vector<double> config;
+    config.push_back(pose.position.y);
+    if (front)
+      config.insert(config.end(), home_config.begin(), home_config.end());
+    else {
+      config.push_back(M_PI);
+      config.insert(config.end(), home_config.begin()+1, home_config.end());
+    }
+    move_group_interface->setJointValueTarget(config);
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    move_group_interface->plan(plan);
+    control_msgs::FollowJointTrajectoryGoal goal;
+    goal.trajectory = plan.trajectory_.joint_trajectory;
+    follow_jt_traj_client->sendGoal(goal, boost::bind(&kittingRobot::fjtMonitorDoneCb, this, _1, _2), boost::bind(&kittingRobot::fjtMonitorActiveCb, this), boost::bind(&kittingRobot::fjtMonitorFeedbackCb, this, _1));
+    bool success = follow_jt_traj_client->waitForResult();
+    if (!gripperMonitoredFJTFailed){
+      std::cout << "YEEEHAAWWWWW!" << std::endl;
+      success = true;
+    }
+    else{
+      std::cout << "Nuuuuu. Apparently FJT failed." << std::endl;
+      success = false;
+      gripperMonitoredFJTFailed = false;
+    }
     return success;
 }
 
@@ -582,10 +1010,13 @@ bool kittingRobot::moveToPose(geometry_msgs::Pose target_pose, bool blocking){
     while (!success && c<5){
       success = (move_group_interface->plan(plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
       if (success and blocking)
-        success = (move_group_interface->move() == moveit::planning_interface::MoveItErrorCode::SUCCESS);
+        success = (move_group_interface->execute(plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
       else if (success and !blocking)
-        success = (move_group_interface->asyncMove() == moveit::planning_interface::MoveItErrorCode::SUCCESS);
+        success = (move_group_interface->asyncExecute(plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
       c++;
+    }
+    if (c >= 5){
+      std::cout << "Could not find plan for pose : " << target_pose.position.x << ", " << target_pose.position.y << ", " << target_pose.position.z << std::endl;
     }
     return success;
 }
@@ -602,22 +1033,39 @@ bool kittingRobot::moveToJointPositions(std::vector<double> j_values, bool block
     return success;
 }
 
-void kittingRobot::movingFeedbackCallback(const moveit_msgs::MoveGroupActionFeedbackConstPtr& msg){
+/*void kittingRobot::movingFeedbackCallback(const moveit_msgs::MoveGroupActionFeedbackConstPtr& msg){
     moveGroupFeedback.status = msg->status.status;
     moveGroupFeedback.prev_state = moveGroupFeedback.state;
     moveGroupFeedback.state = msg->feedback.state;
-}
+}*/
 
 void kittingRobot::jointStatesCallback(const sensor_msgs::JointStateConstPtr& joint_state_msg){
     // wrist_1_joint_index
     double effort = joint_state_msg->effort[wrist_1_joint_index];
-    std::cout << " wrist_1_joint effort : " << effort << std::endl;
-    if (effort > 2){
+    std::cout << " wrist_1_joint effort : " << effort /*<< ", finishedProbe : " << finishedProbe */<< std::endl;
+    if (abs(effort) > 2.2){
       follow_jt_traj_client->cancelGoal();
+      std::cout << "Goal cancelled!" << std::endl;
       sendEmptyTrajectoryToFJTClient();
+      // finishedProbe = true;
     }
 }
 
+void kittingRobot::gantryNextGoalCb(const geometry_msgs::PoseConstPtr& pose){
+    gantry_next_goal = *pose;
+}
+
+void kittingRobot::jointStatesConveyorCallback(const sensor_msgs::JointStateConstPtr& joint_state_msg){
+    // wrist_1_joint_index
+    double effort = joint_state_msg->effort[wrist_1_joint_index];
+    std::cout << " wrist_1_joint effort : " << effort /*<< ", finishedProbe : " << finishedProbe */<< std::endl;
+    if (effort > 2.2){
+      follow_jt_traj_client->cancelGoal();
+      std::cout << "Goal cancelled!" << std::endl;
+      sendConveyorEmptyTrajectoryToFJTClient();
+      // finishedProbe = true;
+    }
+}
 
 bool kittingRobot::addInitialCollisionObjects(){
     std::string id;
@@ -677,7 +1125,7 @@ bool kittingRobot::addInitialCollisionObjects(){
       id = "bin" + std::to_string(i) + "_center_collision";
       geometry_msgs::TransformStamped transformStamped;
       try{
-        transformStamped = tfBuffer.lookupTransform("bin"+std::to_string(i)+"_frame", "world",
+        transformStamped = tfBuffer.lookupTransform("world", "bin"+std::to_string(i)+"_frame", 
                                 ros::Time(0));
       }
       catch (tf2::TransformException &ex) {
@@ -724,10 +1172,10 @@ bool kittingRobot::addPlanningSceneCollisionObject(std::string Id, std::vector<d
 bool kittingRobot::publishToJointPositions(std::vector<double> joint_positions, double time_from_start){
     // jointPositionPublisher.publish()
     trajectory_msgs::JointTrajectory msg;
-    std::cout << "Current joint names are : " << std::endl;
+    /*std::cout << "Current joint names are : " << std::endl;
     std::vector<std::string> joint_names;
     joint_names = move_group_interface->getJointNames();
-    std::copy(joint_names.begin(), joint_names.end(), std::ostream_iterator<std::string>(std::cout << ", "));
+    std::copy(joint_names.begin(), joint_names.end(), std::ostream_iterator<std::string>(std::cout << ", "));*/
     msg.joint_names.clear();
     msg.joint_names.push_back("linear_arm_actuator_joint");
     msg.joint_names.push_back("shoulder_pan_joint");
@@ -747,8 +1195,10 @@ bool kittingRobot::publishToJointPositions(std::vector<double> joint_positions, 
       ros::spinOnce();
       rate.sleep();
     }
-    if(!too_much_time)
+    if(!too_much_time){
+      std::cout << "PublishToJointPositions returning true!" << std::endl;
       return true;
+    }
     else{
       return false;
       ROS_ERROR_STREAM("Took more than 10 secs to publish to joint positions");
@@ -844,3 +1294,10 @@ void kittingRobot::addPartialCollisionObject(std::string ID, std::vector<double>
     // std::cout << std::endl; */
 
 }
+
+
+// NOTE : In jointStatesCallback IF we check for both "objectAttached" (especially) as well as 
+// joint force threshold. Might lead to severe problems in the case of a faulty gripper. 
+
+// Note : Not sure why, but UR placed both blue battery AND the red part in the same place. Need 
+// to fix that issue FIRST THING

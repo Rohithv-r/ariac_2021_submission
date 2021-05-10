@@ -1,6 +1,7 @@
 #include <iostream>
 #include <algorithm>
 #include <vector>
+#include <cmath>
 
 #include <ros/ros.h>
 #include <ros/callback_queue.h>
@@ -20,7 +21,10 @@
 #include <actionlib/client/simple_action_client.h>
 #include <actionlib/client/terminal_state.h>
 #include <ariac_2021_submission/addPlanningSceneCollision.h>
-#include <ariac_2021_submission/pickupStaticObjectAction.h>
+#include <ariac_2021_submission/kittingPickUpStaticObjectAction.h>
+#include <ariac_2021_submission/kittingPickUpConveyorObjectAction.h>
+#include <ariac_2021_submission/inspectionAssemblyAction.h>
+
 
 tf2_ros::Buffer tfBuffer;
 boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
@@ -108,6 +112,7 @@ struct availablePart{
     std::string type_id;
     bool req_for_kitting = false;
     bool inAction = false;
+    bool convCrossedThreshold = false;
     // bool conveyor;
     geometry_msgs::PoseStamped pose;
     // geometry_msgs::TransformStamped estimated_pose;
@@ -130,26 +135,21 @@ struct availablePart{
     // void setConveyor(bool conv) { conveyor = conv; }
     // void setBin(int bin) { bin_id = bin; }
     void estimateAndUpdateTransform();
-    bool hasConveyorPartExceededLimit(double threshold);
+    bool setConvCrossedThreshold(bool crossed) { convCrossedThreshold = crossed; }
 
 };
 
 void availablePart::estimateAndUpdateTransform(){
     ros::Duration diff = ros::Time::now() - lastPoseUpdateTime;
-    pose.pose.position.y -= conveyorVel*(diff.sec+diff.nsec*pow(10,-9));
+    pose.pose.position.y -= conveyorVel*diff.toSec();
     lastPoseUpdateTime = ros::Time::now();
-}
-
-bool availablePart::hasConveyorPartExceededLimit(double threshold){
-    if (pose.pose.position.y > threshold)
-      return true;
-    return false;
 }
 
 class availablePartsManager{
   private:
     std::vector<availablePart> availableParts;
     std::vector<availablePart> conveyorParts;
+    std::vector<availablePart> AGVParts;
     std::map<std::string,int> type_count;
     std::map<std::string,int> type_id_prev;
     void addTypeCount(std::string type, int count);
@@ -161,24 +161,55 @@ class availablePartsManager{
     }
     // void update();
     // availablePart mostRecentPart;
+    int newConvCrossed = 0;
     void updateTransforms();
-    std::vector<availablePart> getConveyorPartsExceedingLimit(double threshold = 1);
+    void logInfo();
+    std::vector<availablePart> getConveyorPartsExceedingLimit();
     int getTypeCount(std::string type);
     int getNonRequiredTypeCount(std::string type);
-    availablePart& getNonRequiredPart(std::string type, bool markAsRequired);  // Always call getNonRequiredTypeCount first
+    int getNonRequiredExceedingConveyorTypeCount(std::string type);
+    availablePart getNonRequiredPart(std::string type, bool markAsRequired);  // Always call getNonRequiredTypeCount first
+    availablePart getNonRequiredExceedingConveyorPart(std::string type, bool markAsRequired);
     int getTypeIdPrev(std::string type);
     std::vector<availablePart> getAvailableParts() { return availableParts;}
-    bool addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame);
+    std::vector<availablePart>& getConveyorParts() { return conveyorParts; }
+    std::vector<availablePart> getAGVParts() { return AGVParts; }
+    void conveyorToAvailablePart(std::string id);
+    void eraseConveyorPart(std::string id);
+    bool addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame, bool conveyor = false);
     void updateKittableParts(std::vector<std::string>);
     void setInAction(std::string typeID, bool inAction = true);
     availablePart getStaticKittablePart();
     std::vector<availablePart> getStaticKittableParts();
 };
 
+void availablePartsManager::logInfo(){
+  std::cout << "----------------------------------------------------------" << std::endl;
+  std::cout << "Available parts info : " << std::endl;
+    for (auto i : availableParts){
+      std::cout << i.type_id << ", " << i.inAction << ", " << i.req_for_kitting << std::endl;
+    }
+  std::cout << "Conveyor parts info : " << std::endl;
+    for (auto i : conveyorParts){
+      std::cout << i.type_id << ", " << i.inAction << ", " << i.req_for_kitting << std::endl;
+    }
+} 
+
 int availablePartsManager::getNonRequiredTypeCount(std::string type){
     int count = 0;
     for (auto i : availableParts){
       if (!i.req_for_kitting && i.type == type){
+        count++;
+      }
+    }
+    return count;
+}
+
+int availablePartsManager::getNonRequiredExceedingConveyorTypeCount(std::string type){
+    int count = 0;
+    std::vector<availablePart> parts = getConveyorPartsExceedingLimit();
+    for (auto i : parts){
+      if (!i.req_for_kitting && i.type == type /*&& i.pose.pose.position.y > -4.2*/){
         count++;
       }
     }
@@ -192,7 +223,7 @@ void availablePartsManager::setInAction(std::string typeID, bool inAction){
     }
 }
 
-availablePart& availablePartsManager::getNonRequiredPart(std::string type, bool markAsRequired){
+availablePart availablePartsManager::getNonRequiredPart(std::string type, bool markAsRequired){
     for (auto &i : availableParts){
       if (!i.req_for_kitting){
         if (i.type == type){
@@ -201,6 +232,28 @@ availablePart& availablePartsManager::getNonRequiredPart(std::string type, bool 
         }
       }
     }
+}
+
+availablePart availablePartsManager::getNonRequiredExceedingConveyorPart(std::string type, bool markAsRequired){
+    availablePart p;
+    for (std::vector<availablePart>::iterator it = conveyorParts.begin(); it!=conveyorParts.end(); it++){
+      if (it->convCrossedThreshold && !it->req_for_kitting && it->type== type){
+        std::cout << "Yaaaaqqqqqq" << std::endl;
+        return *it;
+      }
+      else
+        std::cout << "Noooqqq" << std::endl;
+    }
+    // return parts;
+    // for (auto &i : parts){
+    //   if (!i.req_for_kitting){
+    //     if (i.type == type){
+    //       i.req_for_kitting = true;
+    //       std::cout << "YAAAAQAAA" << std::endl;
+    //       return i;
+    //     }
+    //   }
+    // }
 }
 
 void availablePartsManager::updateKittableParts(std::vector<std::string> requiredTypes){
@@ -249,13 +302,19 @@ std::vector<availablePart> availablePartsManager::getStaticKittableParts(){
 void availablePartsManager::updateTransforms() {
     for (std::vector<availablePart>::iterator it = conveyorParts.begin(); it!=conveyorParts.end(); it++){
       it->estimateAndUpdateTransform();
+      if (it->pose.pose.position.y < 0 && !it->convCrossedThreshold){
+        it->setConvCrossedThreshold(true);
+        newConvCrossed++;
+      }
     }
 }
 
-std::vector<availablePart> availablePartsManager::getConveyorPartsExceedingLimit(double threshold){
+
+
+std::vector<availablePart> availablePartsManager::getConveyorPartsExceedingLimit(){
     std::vector<availablePart> parts;
     for (std::vector<availablePart>::iterator it = conveyorParts.begin(); it!=conveyorParts.end(); it++){
-      if (it->hasConveyorPartExceededLimit(threshold))
+      if (it->convCrossedThreshold)
         parts.push_back(*it);
     }
     return parts;
@@ -279,10 +338,26 @@ void availablePartsManager::addTypeIdPrev(std::string type, int id=1){
       it->second += id;
     }
     else
-      type_id_prev.insert(std::pair<std::string,int>(type,0));
+      type_id_prev.insert(std::pair<std::string,int>(type,1));
 }
 
-bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame){
+void availablePartsManager::conveyorToAvailablePart(std::string id){
+    std::vector<availablePart>::iterator it;
+    if ( (it = std::find_if(conveyorParts.begin(), conveyorParts.end(), [id](availablePart p) { return p.type_id==id; })) != conveyorParts.end()){
+      availablePart part = *it;
+      availableParts.push_back(part);
+      conveyorParts.erase(it);
+    }
+}
+
+void availablePartsManager::eraseConveyorPart(std::string id){
+    std::vector<availablePart>::iterator it;
+    if ( (it = std::find_if(conveyorParts.begin(), conveyorParts.end(), [id](availablePart p) { return p.type_id==id; })) != conveyorParts.end()){
+      conveyorParts.erase(it);
+    }
+}
+
+bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::string camera_frame, bool conveyor){
   // First check if model type already exists. If not, add id and update count & prev id. 
   // Compute pose WRT world first.
 
@@ -297,7 +372,7 @@ bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::st
       std::vector<availablePart>::iterator it = availableParts.begin();
       while ( (it = std::find_if(it, availableParts.end(),
         [m](availablePart part) { return part.type==m.type; })) != availableParts.end() ){
-          if (positionEquality(world_pose.pose,it->pose.pose)){
+          if (positionEquality(world_pose.pose, it->pose.pose)){
             // availableParts.push_back(availablePart(m.type,world_pose));
             // addTypeCount(m.type);
             return false; // Object exists, so we're not adding. 
@@ -307,7 +382,10 @@ bool availablePartsManager::addPartFromLogicalCamera(nist_gear::Model m, std::st
     }
     // If it exits the above block without returning, it means object is new and must be added
     std::string id = m.type + std::to_string(getTypeIdPrev(m.type) + 1);
-    availableParts.push_back(availablePart(m.type, id, world_pose));
+    if (!conveyor)
+      availableParts.push_back(availablePart(m.type, id, world_pose));
+    else
+      conveyorParts.push_back(availablePart(m.type, id, world_pose));
     // mostRecentPart = availablePart(m.type, id, world_pose);
     addTypeCount(m.type);
     addTypeIdPrev(m.type);
@@ -374,7 +452,7 @@ void availableProducts::addProductFromLogicalCam(nist_gear::Model m, std::string
     transformStamped.header.frame_id = cam_frame;
     transformStamped.child_frame_id = m.type + std::to_string(2);
     try{
-      transformStamped = tfBuffer.lookupTransform(frame, "world",
+      transformStamped = tfBuffer.lookupTransform("world", frame, 
                               ros::Time(0));
       bin_transforms[i] = transformStamped;
     }
@@ -537,22 +615,135 @@ int kittingTask::getReqTypeCount(std::string product_type){
 
 
 
+// ---------------------------- ASSEMBLY CLASS ---------------------------------------
+
+struct assemblyProduct{
+    nist_gear::Product product;
+    bool required;
+    bool partReorientation;
+    assemblyProduct(nist_gear::Product p, bool r, bool part_reorientation = false) : product(p), required(r), partReorientation(part_reorientation) { }
+    // the below constructor is mainly useful when passing entire products as goal for dead reckoning.
+    assemblyProduct(nist_gear::Product p, int bfcase_id, bool r, bool part_reorientation = false) : required(r), partReorientation(part_reorientation) {
+      product = p;
+      product.pose = getProductDestinationPose(bfcase_id);
+    }
+    geometry_msgs::Pose getProductDestinationPose(int briefcase_id /*, std::string agv_id*/);
+};
+
+
+geometry_msgs::Pose assemblyProduct::getProductDestinationPose(int briefcase_id /*, std::string agv_id*/){
+    geometry_msgs::PoseStamped t;
+    t.header.frame_id = "briefcase_" + std::to_string(briefcase_id);
+    // std::cout << "Using kit_id : " << t.header.frame_id << ", agv id : " << agv_id << std::endl;
+    t.pose = product.pose;
+    return tfBuffer.transform(t, "world").pose;
+}
+
+
+
+class assemblyTask{
+  public:
+    // kittingTask(const nist_gear::KittingShipment& ks) : shipment(ks) { }
+    std::vector<assemblyProduct> assembly_products;
+    std::string shipment_type, station_id;
+    assemblyTask() { }
+    assemblyTask(const nist_gear::AssemblyShipment& as, bool newHighPriority = false) 
+      : shipment_type(as.shipment_type), station_id(as.station_id) {
+        if (station_id.size() > 0)
+          briefcase_id = int(station_id[station_id.size()-1] - '0');
+        for (auto i : as.products){
+          assembly_products.push_back(assemblyProduct(i, briefcase_id, true));
+          // products.insert(std::pair<nist_gear::Product, bool>(i, true));
+        }
+    }
+    // kit_tray_1, etc
+    int getReqTypeCount(std::string type);
+    int getReqCount();
+    int getBriefcaseID() { return briefcase_id; }
+    std::vector<std::string> getRequiredProductTypes();
+    std::vector<assemblyProduct> getRequiredAssemblyProducts();
+    bool isFinished() { return finished; }
+    void setFinished(bool Fin) { finished = Fin; }
+    void markProductReqByIndex(bool req, int index);
+    // bool areJobsAllotted() { return jobsAllotted; }
+    // void setJobsAllotted(bool b) { jobsAllotted = b; }
+    // void sendAGV();
+    
+  private:
+    // nist_gear::KittingShipment shipment;
+    // std::string shipment_type, station_id;
+    int briefcase_id;
+    bool finished = false;
+    // bool jobsAllotted = false;
+    int assemblyPriority = 1; // 1 is least important, higher is more important
+    // std::vector<kittingProduct> kitting_products;
+    // std::map<nist_gear::Product, bool> products; // product, and if it is required
+};
+
+
+std::vector<assemblyProduct> assemblyTask::getRequiredAssemblyProducts(){
+    std::vector<assemblyProduct> products;
+    for (auto i : assembly_products)
+      if (i.required)
+        products.push_back(i);
+    return products;
+}
+
+void assemblyTask::markProductReqByIndex(bool req, int index){
+    assembly_products[index].required = req;
+}
+
+std::vector<std::string> assemblyTask::getRequiredProductTypes(){
+    std::vector<std::string> product_types;
+    for (auto i : assembly_products){
+      if (i.required)
+        product_types.push_back(i.product.type);
+    }
+    return product_types;
+}
+
+int assemblyTask::getReqCount(){
+    int count = 0;
+    for (auto i : assembly_products){
+      if (i.required)
+        count++;
+    }
+    return count;
+}
+
+
+int assemblyTask::getReqTypeCount(std::string product_type){
+    std::vector<assemblyProduct>::iterator it = assembly_products.begin();
+    int count = 0;
+    while ( (std::find_if(it, assembly_products.end(), [product_type] (assemblyProduct p) { return ( (p.product.type == product_type) && p.required); })) != assembly_products.end()){
+      it++;
+      count++;
+    }
+    return count;
+}
+
+
+
 
 // ----------------------------- ENUM CLASS ------------------------------------------
 
 class enumClass{
   public:
     enum ROBOT{
-      kitting, assembly, any
+      kitting, gantry, any
     };
 
     enum TASK{
-      pick_and_place, assemble, part_reorientation
+      pick_and_place, conveyor_pick_and_place_to_empty, assemble, part_reorientation
     };
 
     enum EVENT{
-      NEW_LC_PART_DETECTED, NEW_UNKNOWN_PART_DETECTED, CONVEYOR_THRESHOLD_REACHED,
+      NEW_LC_PART_DETECTED, GRIPPER_FAILED, CONVEYOR_THRESHOLD_REACHED,
       FAULTY_SENSOR, ROBOT_HEALTH_FAILED, UPDATE_PENDING
+    };
+
+    enum CAMERA_ACTION{
+      ADD_IF_NEW, FAULTY_GRIPPER_OBJ_MOVED
     };
 };
 
@@ -570,69 +761,70 @@ class TaskManager{
 
     // ----------------------------- JOB CLASS ------------------------------------------
 
-    class job{
+    struct job{
       // A job object contains availablePart, assigned robot, etc. 
       // Used to perform kitting/assembly/part_reorientation by calling services.
-      private:
+      public:
         availablePart part;
-        std::string type_ID;
+        // std::string type_ID;
         // std::string part_type;
         enumClass::ROBOT robot;
         enumClass::TASK task;
         geometry_msgs::Pose final_pose;
+        bool pending = true;
         bool success = false;
-        bool performCalled = false;
-        boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickupStaticClient;
+        bool inAction = false;
+        // boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>> pickupStaticClient;
         bool resultReceived = false;
-        ros::NodeHandlePtr job_nh;
+        // ros::NodeHandlePtr job_nh;
         // ros::Subscriber result_sub, feedback_sub;
         // TaskManager& Parent;
 
-      public:
+      
         // job(TaskManager& Tmg) : Parent(Tmg) { }
         job() { }
-        job(availablePart p, geometry_msgs::Pose finalPose, std::string ID, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
+        job(availablePart& p, geometry_msgs::Pose finalPose, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
           enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t), final_pose(finalPose) {
-            // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
+            // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
             // pickupStaticClient->waitForServer();
         }
         /*job(const job& j) : part(j.part), type_ID(j.type_ID), robot(j.robot), task(j.task), final_pose(j.final_pose), success(j.success), job_nh(j.job_nh), pickupStaticClient(j.pickupStaticClient) {
           // _nh = boost::make_shared<ros::NodeHandle>();
-          // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
+          // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
           // pickupStaticClient->waitForServer();
         }*/
         // job(std::string partType, geometry_msgs::Pose finalPose, enumClass::ROBOT r = enumClass::ROBOT::kitting, 
         //   enumClass::TASK t = enumClass::TASK::pick_and_place) : part_type(partType), robot(r), task(t), final_pose(finalPose) { }
-        job(availablePart p, geometry_msgs::Pose finalPose, std::string ID, ros::NodeHandlePtr& nodeHandle, boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>& ppClient,
+        /*job(availablePart p, geometry_msgs::Pose finalPose, std::string ID, ros::NodeHandlePtr& nodeHandle, boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>>& ppClient,
           enumClass::ROBOT r = enumClass::ROBOT::kitting, 
           enumClass::TASK t = enumClass::TASK::pick_and_place) : part(p), robot(r), task(t), final_pose(finalPose), job_nh(nodeHandle), pickupStaticClient(ppClient) {
-            // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
+            // pickupStaticClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>>(*job_nh, "ariac/kitting/pick_and_place_static_action");
             // pickupStaticClient->waitForServer();
-        }
+        }*/
         
         void perform();
-        void setResultReceived(bool r) { resultReceived = r; }
+        /*void setResultReceived(bool r) { resultReceived = r; }
         bool isPerformCalled() { return performCalled; };
         bool gotResult() { return resultReceived; }
         bool isSuccess() { return success; }
         std::string getPartType() { return part.type; }
         availablePart getPart() { return part; }
-        geometry_msgs::Pose getFinalPose() { return final_pose; }
-        ros::NodeHandlePtr getNodeHandle() { return job_nh; }
-        boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> getClient() { return pickupStaticClient; }
-        std::string getTypeID() { return type_ID; }
-        void setPickUpStaticClient(boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> client) { pickupStaticClient = client; }
-        enumClass::TASK getTask() { return task; }
+        geometry_msgs::Pose getFinalPose() { return final_pose; }*/
+        // ros::NodeHandlePtr getNodeHandle() { return job_nh; }
+        // boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>> getClient() { return pickupStaticClient; }
+        // std::string getTypeID() { return type_ID; }
+        // void setPickUpStaticClient(boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>> client) { pickupStaticClient = client; }
+        /*enumClass::TASK getTask() { return task; }
         void setTask(enumClass::TASK T) { task = T; }
         enumClass::ROBOT getRobot() { return robot; }
-        void setRobot(enumClass::ROBOT R) { robot = R; }
-        // void sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
-        // void sppResultCb(const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
+        void setRobot(enumClass::ROBOT R) { robot = R; }*/
+        // void sppFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback);
+        // void sppResultCb(const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result);
         // void sppStatusCb(const actionlib::SimpleClientGoalState& state);
-        void performSpinOnce();
-        void sppActDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
+        /*void performSpinOnce();
+        void sppActDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result);
         void sppActActiveCb();
-        void sppActFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
+        void sppActFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback);*/
 
         
     };
@@ -641,8 +833,13 @@ class TaskManager{
 
     struct jobInterface{
       public:
-        std::vector<job> currentJobs;
+        // std::vector<job> currentJobs;
+        job currentKittingJob;
+        bool currentKittingJobAssigned = false;
+        job currentGantryJob;
+        bool currentGantryJobAssigned = false;
         std::vector<job> pendingJobs;
+        std::vector<job> convJobs;
         std::vector<job> highPriorityJobs;
         // std::vector<job> currentlyImpossiblePendingJobs;
       
@@ -657,11 +854,15 @@ class TaskManager{
         bool currentJobGotResult();
         std::vector<enumClass::ROBOT> getRobotsNotInAction();
         int getPendingJobCountByRobot(enumClass::ROBOT R);
+        int getConvJobCount();
         job eraseAndGetPendingJobByRobot(enumClass::ROBOT R);
+        job eraseAndGetConvJob();
         void eraseAndAddPendingJobByRobot(enumClass::ROBOT R);
-        std::vector<std::string> performCurrentJobs();
+        // std::vector<std::string> performCurrentJobs();
         void spinCurrentJobs();
         void logJobDetails();
+        bool kittingRobotJobInProgress();
+        bool gantryRobotJobInProgress();
 
     };
 
@@ -670,28 +871,46 @@ class TaskManager{
         tfListenerPtr = boost::make_shared<tf2_ros::TransformListener>(tfBuffer);
         // nh_action = boost::make_shared<ros::NodeHandle>();
         addPlanningSceneCollisionKittingClient = _nh->serviceClient<ariac_2021_submission::addPlanningSceneCollision>("ariac/kitting/add_kitting_planning_scene_collision");
-        addPlanningSceneCollisionKittingClient.waitForExistence(ros::Duration(10));
+        // addPlanningSceneCollisionKittingClient.waitForExistence(ros::Duration(10));
         order_sub = _nh->subscribe("ariac/orders", 4, &TaskManager::orderCallback, this);
         lc_conveyor_sub = _nh->subscribe("/ariac/logical_camera_conveyor", 10, &TaskManager::lcConveyorCallback, this);
         // lc_1_2_sub = _nh->subscribe("/ariac/logical_camera_1_2", 3, &TaskManager::lc12Callback, this);
         // lc_3_4_sub = _nh->subscribe("/ariac/logical_camera_3_4", 3, &TaskManager::lc34Callback, this);
-        lc_1_2 = _nh->createTimer(ros::Duration(2), &TaskManager::lc_1_2_timer_callback, this);
-        lc_3_4 = _nh->createTimer(ros::Duration(2), &TaskManager::lc_3_4_timer_callback, this);
+        // lc_1_2 = _nh->createTimer(ros::Duration(2), &TaskManager::lc_1_2_timer_callback, this);
+        // lc_3_4 = _nh->createTimer(ros::Duration(2), &TaskManager::lc_3_4_timer_callback, this);
         while (!updateBinTransforms()){
           std::cout << "Unable to update bin transforms!" << std::endl;
         }
+        kitting_robot_x_min = bin_transforms[0].transform.translation.x - 0.3;
+        std::cout << "Kitting min x is : " << kitting_robot_x_min << std::endl;
         start_competition(_nh);
-        pickupStaticObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>>("ariac/kitting/pick_and_place_static_action");
-        pickupStaticObjectClient->waitForServer();
-        while (availablePartsManagerInstance.getAvailableParts().size() == 0){
+        kittingPickUpStaticObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>>("ariac/kitting/kitting_pick_and_place_static_action");
+        // kittingPickUpStaticObjectClient->waitForServer();
+        kittingPickUpConveyorObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpConveyorObjectAction>>("ariac/kitting/kitting_pick_and_place_conveyor_action");
+        // kittingPickUpConveyorObjectClient->waitForServer();
+        gantryPickUpStaticObjectClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>>("ariac/gantry/gantry_pick_and_place_static_action");
+        // gantryPickUpStaticObjectClient->waitForServer();
+        inspectionAssemblyClient = boost::make_shared<actionlib::SimpleActionClient<ariac_2021_submission::inspectionAssemblyAction>>("ariac/gantry/inspection_assembly_action");
+        /*while (availablePartsManagerInstance.getAvailableParts().size() == 0){
           // std::cout << "No parts available yet" << std::endl;
           ros::spinOnce();
-        }
-        ros::Rate rate(0.4);
+        }*/
+
+        /*while (_nh->ok()){
+          sampleConveyorPickAndPlace();
+        }*/
+
+        /*sampleGantryPickAndPlace();
+        while (_nh->ok()){
+          ros::spinOnce();
+        }*/
+
+        // std::cout << "After sampleConvP&P!" << std::endl;
+        ros::Rate rate(0.5);
         while (_nh->ok()){
           // summa();
           jobAllocator();
-          ros::spinOnce(); // Need to test if fast subscriberCallbacks also get called without this.
+          // ros::spinOnce(); // Need to test if fast subscriberCallbacks also get called without this.
           rate.sleep();
         }
     }
@@ -707,14 +926,23 @@ class TaskManager{
     ros::Timer lc_1_2;
     ros::Timer lc_3_4;
     availablePartsManager availablePartsManagerInstance;
-    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::pickupStaticObjectAction>> pickupStaticObjectClient;
+    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>> kittingPickUpStaticObjectClient;
+    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpConveyorObjectAction>> kittingPickUpConveyorObjectClient;
+    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::kittingPickUpStaticObjectAction>> gantryPickUpStaticObjectClient;
+    boost::shared_ptr<actionlib::SimpleActionClient<ariac_2021_submission::inspectionAssemblyAction>> inspectionAssemblyClient;
     // tf2_ros::Buffer tfBuffer;
     // boost::shared_ptr<tf2_ros::TransformListener> tfListenerPtr;
     std::vector<geometry_msgs::TransformStamped> bin_transforms;
     std::vector<kittingTask> kittingTasks;
+    std::vector<assemblyTask> assemblyTasks;
     boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_1_2;
     boost::shared_ptr<const nist_gear::LogicalCameraImage> msg_3_4;
-    bool kittingPickAndPlaceInProgress = false;
+    bool kittingRobotInAction = false;
+    bool gantryRobotInAction = false;
+    bool conveyorPartDetected = false;
+    double usualFinalZ = 0.751650;
+    double kitting_robot_x_min = -1;
+    std::map<std::string, double> objectHeights { {"pump", 0.126}, {"battery", 0.0533}, {"regulator", 0.0674}, {"sensor", 0.0674} };
     // std::vector<job> currentJobs;
     // std::vector<job> pendingJobs;
     // std::vector<job> highPriorityJobs;
@@ -722,6 +950,9 @@ class TaskManager{
     jobInterface orderJobInterface;
     void lc_1_2_timer_callback(const ros::TimerEvent& e);
     void lc_3_4_timer_callback(const ros::TimerEvent& e);
+    int lc_new_count = 0;
+    void lc_1_2_update(enumClass::CAMERA_ACTION action);
+    void lc_3_4_update(enumClass::CAMERA_ACTION action);
     void orderCallback(const nist_gear::OrderConstPtr& orderMsg);
     void lcConveyorCallback(const nist_gear::LogicalCameraImageConstPtr& msg);
     bool isProductAvailable(std::vector<nist_gear::Model>::const_iterator i, std::vector<nist_gear::Product> _currentAvailableParts);
@@ -730,19 +961,30 @@ class TaskManager{
     bool kittingHighPriorityExists();
     bool updateKittingFinished();   // sets kT to finished and sends AGV if reqCount = 0. returns true if all kTs are finished.
     int getPartBin(availablePart p);
+    geometry_msgs::Pose getEmptyBinLocation(enumClass::ROBOT robot);
     void samplePickAndPlace();
+    void sampleGantryPickAndPlace();
+    void sampleConveyorPickAndPlace();
+    void sampleInspectionAssembly();
     void jobAllocator();
     void eventManager(enumClass::EVENT e);
-    // void sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result);
-    // void sppActiveCb();
-    // void sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback);
+    void perform(job&);
+    void kittingSPPDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result);
+    void kittingSPPActiveCb();
+    void kittingSPPFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback);
+    void kittingConvDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpConveyorObjectResultConstPtr& result);
+    void kittingConvActiveCb();
+    void kittingConvFeedbackCb(const ariac_2021_submission::kittingPickUpConveyorObjectFeedbackConstPtr& feedback);
+    void gantrySPPDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result);
+    void gantrySPPActiveCb();
+    void gantrySPPFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback);
     // void summa();
     // void lc12Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
     // void lc34Callback(const nist_gear::LogicalCameraImageConstPtr& msg);
 };
 
 void TaskManager::eventManager(enumClass::EVENT e){
-    std::cout << "eventManager called!" << std::endl;
+    // std::cout << "eventManager called!" << std::endl;
     switch(e){
 
       // for each kitting product in kittingTasks, if there is a non-required availablePart of same type,
@@ -758,7 +1000,7 @@ void TaskManager::eventManager(enumClass::EVENT e){
               if (availablePartsManagerInstance.getNonRequiredTypeCount(product->product.type) > 0){
                 std::cout << "Adding pending job!" << std::endl;
                 availablePart part = availablePartsManagerInstance.getNonRequiredPart(product->product.type, true);
-                orderJobInterface.pendingJobs.push_back( job(part, product->getProductDestinationPose(it.getKitID()), part.type_id, pickupStaticObjectClient,
+                orderJobInterface.pendingJobs.push_back( job(part, product->getProductDestinationPose(it.getKitID()), part.type_id, kittingPickUpStaticObjectClient,
                   enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place) );
                 it.markProductReqByIndex(false, (product - products.begin()));    // Mark kittingProduct as non-required.
               }
@@ -769,74 +1011,121 @@ void TaskManager::eventManager(enumClass::EVENT e){
         }*/
         // std::cout << "Quit new LC detected case" << std::endl;
 
-      case enumClass::EVENT::UPDATE_PENDING :
-        for (auto& it : kittingTasks){
-          for (std::size_t i = 0; i < it.kitting_products.size(); i++){
-            if (it.kitting_products[i].required && availablePartsManagerInstance.getNonRequiredTypeCount(it.kitting_products[i].product.type) > 0){
-              std::cout << "-------------------------------" << std::endl;
-              std::cout << "Adding pending job!" << std::endl;
-              availablePart part = availablePartsManagerInstance.getNonRequiredPart(it.kitting_products[i].product.type, true);
-              job j(part, it.kitting_products[i].getProductDestinationPose(it.getKitID()), 
-                part.type_id, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
-              orderJobInterface.pendingJobs.push_back( j );
-              std::cout << orderJobInterface.pendingJobs.size() << std::endl;
-              std::cout << "BEFORE : " << it.getReqCount() << std::endl;
-              it.kitting_products[i].required = false;
-              std::cout << "AFTER : " << it.getReqCount() << std::endl;
-              std::cout << orderJobInterface.pendingJobs[0].getTypeID() << " XXXXX" << std::endl;
-              std::cout << "*****************************************" << std::endl;
+      case enumClass::EVENT::UPDATE_PENDING :       // Iterate through every kittingTask. For each kitting product, if it is required and there is a non-required type available, add a job for it in pendingJobs, mark both the kitting product as well as part as required.
+        {
+          for (auto& it : kittingTasks){
+            for (std::size_t i = 0; i < it.kitting_products.size(); i++){
+              if (it.kitting_products[i].required){
+                if (availablePartsManagerInstance.getNonRequiredExceedingConveyorTypeCount(it.kitting_products[i].product.type) > 0){
+                  std::cout << "*****************************************" << std::endl;
+                  std::cout << "Adding conveyor pending job!" << std::endl;
+                  std::cout << "Assigning a conveyor pending job with kitting robot" << std::endl;
+                  availablePart part = availablePartsManagerInstance.getNonRequiredExceedingConveyorPart(it.kitting_products[i].product.type, true);
+                  job j(part, it.kitting_products[i].getProductDestinationPose(it.getKitID()), 
+                    enumClass::ROBOT::kitting, enumClass::TASK::conveyor_pick_and_place_to_empty);
+                  orderJobInterface.convJobs.push_back( j );
+                  it.kitting_products[i].required = false;
+                }
+
+                if (availablePartsManagerInstance.getNonRequiredTypeCount(it.kitting_products[i].product.type) > 0){
+                  std::cout << "*****************************************" << std::endl;
+                  std::cout << "Adding pending job!" << std::endl;
+                  availablePart part = availablePartsManagerInstance.getNonRequiredPart(it.kitting_products[i].product.type, true);
+                  // If part's x < kitting_x_min, then assign gantry to place it in an empty accessible bin?
+                  if (part.pose.pose.position.x > kitting_robot_x_min){
+                    std::cout << "Assigning a pending job with kitting robot" << std::endl;
+                    job j(part, it.kitting_products[i].getProductDestinationPose(it.getKitID()), 
+                      enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
+                    orderJobInterface.pendingJobs.push_back( j );
+                    it.kitting_products[i].required = false;
+                  }
+                  else{
+                    std::cout << "Assigning a pending job with gantry robot" << std::endl;
+                    job j(part, it.kitting_products[i].getProductDestinationPose(it.getKitID()), 
+                      enumClass::ROBOT::gantry, enumClass::TASK::pick_and_place);
+                    orderJobInterface.pendingJobs.push_back( j );
+                    it.kitting_products[i].required = false;
+                  }
+                  std::cout << "Pending jobs size : " << orderJobInterface.pendingJobs.size() << std::endl;
+                  usualFinalZ = it.kitting_products[i].getProductDestinationPose(it.getKitID()).position.z;
+                  // std::cout << "BEFORE : " << it.getReqCount() << std::endl;
+                  // it.kitting_products[i].required = false;
+                  // std::cout << "AFTER : " << it.getReqCount() << std::endl;
+                  // std::cout << orderJobInterface.pendingJobs[0].getTypeID() << " XXXXX" << std::endl;
+                  std::cout << "*****************************************" << std::endl;
+                }
+              }
+              
             }
           }
+        break;
         }
+        
+      case enumClass::EVENT::CONVEYOR_THRESHOLD_REACHED : // conveyorJob becomes more important
+        {
+          std::vector<availablePart> convParts = availablePartsManagerInstance.getConveyorPartsExceedingLimit();
+          for (auto& part : convParts){
+            // orderJobInterface.convJobs.push_back( job(part, getEmptyBinLocation(enumClass::ROBOT::kitting), enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place));
+            
+          }
+          break;
+        }
+        
+      case enumClass::EVENT::GRIPPER_FAILED :
+        {
+          std::cout << "Gripper failed scenario passed into eventManager" << std::endl;
+          lc_1_2_update(enumClass::CAMERA_ACTION::FAULTY_GRIPPER_OBJ_MOVED);
+          lc_3_4_update(enumClass::CAMERA_ACTION::FAULTY_GRIPPER_OBJ_MOVED);
+          break;
+        }
+
     }
 }
 
 
 void TaskManager::jobAllocator(){
-    std::cout << "jobAllocator called" << std::endl;
+    // std::cout << "jobAllocator called" << std::endl;
     // orderJobInterface.spinCurrentJobs();
-    eventManager(enumClass::UPDATE_PENDING);
-    std::cout << orderJobInterface.currentJobs.size() << " , " << orderJobInterface.pendingJobs.size() << std::endl;
-    availablePartsManagerInstance.updateTransforms();
-    if (orderJobInterface.currentJobs.size() > 0){
-      // std::cout << "YEY 1" << std::endl;
-      orderJobInterface.logJobDetails();
-      if (orderJobInterface.currentJobGotResult()){   // if any of current jobs got result, if a pending job of same robot type exists, then we erase it and pushback a pending job
-        
-        for (std::vector<job>::iterator i = orderJobInterface.currentJobs.begin(); i!=orderJobInterface.currentJobs.end();){
-          if ( (*i).gotResult() && (*i).isSuccess() && orderJobInterface.getPendingJobCountByRobot((*i).getRobot()) > 0 ){
-            std::cout << "Replacing current finished job!" << std::endl;
-            enumClass::ROBOT robot = i->getRobot();
-            orderJobInterface.currentJobs.erase(i);
-            // orderJobInterface.eraseAndAddPendingJobByRobot(robot);
-            for (std::vector<job>::iterator i = orderJobInterface.pendingJobs.begin(); i!=orderJobInterface.pendingJobs.end(); i++){
-              if (i->getRobot() == robot){
-                job j(i->getPart(), i->getFinalPose(), 
-                  i->getTypeID(), _nh, pickupStaticObjectClient, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
-                orderJobInterface.currentJobs.push_back(j);
-                orderJobInterface.pendingJobs.erase(i);
-                break;
-              }
-            }
-            std::vector<std::string> ids = orderJobInterface.performCurrentJobs();
-            for (auto ID : ids)
-              availablePartsManagerInstance.setInAction(ID, true);
-            // job newCurrentJob = job( orderJobInterface.eraseAndGetPendingJobByRobot((i->getRobot())) );
-            // newCurrentJob.perform();
-            // availablePartsManagerInstance.setInAction(newCurrentJob.getTypeID(), true);
-            // i = orderJobInterface.currentJobs.erase(i);
-            // orderJobInterface.currentJobs.push_back( newCurrentJob );
-          }
-          else{
-            std::cout << "BABAAAALOL : " << (*i).gotResult() << " " << (*i).isSuccess() << " " << (orderJobInterface.getPendingJobCountByRobot((*i).getRobot()) > 0) << std::endl;
-            i++;
-          }
-        }
-      }
-      else
-        std::cout << "LOOBAA : " << orderJobInterface.currentJobs[0].gotResult() << " " << orderJobInterface.currentJobs[0].getTypeID() << std::endl;
+    if (lc_new_count < 3 || (availablePartsManagerInstance.getAvailableParts().size() == 0)){
+      lc_1_2_update(enumClass::CAMERA_ACTION::ADD_IF_NEW);
+      lc_3_4_update(enumClass::CAMERA_ACTION::ADD_IF_NEW);
     }
-    // if no currentJobs and no pendingJobs exist, we check if kittingTasks have been finished and marked as finished. If not marked as finished, we send AGV and mark as finished.
+    eventManager(enumClass::UPDATE_PENDING);
+    // std::cout << orderJobInterface.currentJobs.size() << " , " << orderJobInterface.pendingJobs.size() << std::endl;
+    // std::cout << "Eeeebaaaa " << std::endl;
+    availablePartsManagerInstance.updateTransforms();
+    availablePartsManagerInstance.logInfo();
+    if (!kittingRobotInAction){
+      // std::cout << "Naaabaaaa" << std::endl;
+      // std::cout << "YEY 1" << std::endl;
+      // If there is high priority order, assign that. Else if there is a pendingJob for this robot, assign it. 
+      if (orderJobInterface.getConvJobCount() > 0){
+        orderJobInterface.currentKittingJob = orderJobInterface.eraseAndGetConvJob();
+        std::cout << "Erased a conveyor job and assigned it to currentkittingJob. Size of pending = " << orderJobInterface.pendingJobs.size() << std::endl;
+        orderJobInterface.currentKittingJobAssigned = true;
+        perform(orderJobInterface.currentKittingJob);
+      }      
+      else if (orderJobInterface.getPendingJobCountByRobot(enumClass::ROBOT::kitting) > 0){
+        orderJobInterface.currentKittingJob = orderJobInterface.eraseAndGetPendingJobByRobot(enumClass::ROBOT::kitting);
+        std::cout << "Erased a pending job and assigned it to currentkittingJob. Size of pending = " << orderJobInterface.pendingJobs.size() << std::endl;
+        orderJobInterface.currentKittingJobAssigned = true;
+        perform(orderJobInterface.currentKittingJob);
+      }
+    }
+    // else
+    //   orderJobInterface.logJobDetails();
+
+    if (!gantryRobotInAction){
+      if (orderJobInterface.getPendingJobCountByRobot(enumClass::ROBOT::gantry) > 0){
+        orderJobInterface.currentGantryJob = orderJobInterface.eraseAndGetPendingJobByRobot(enumClass::ROBOT::gantry);
+        std::cout << "Erased a pending job and assigned it to currentGantryJob. Size of pending = " << orderJobInterface.pendingJobs.size() << std::endl;
+        orderJobInterface.currentGantryJobAssigned = true;
+        perform(orderJobInterface.currentGantryJob);
+      }
+    }
+
+
+    /*// if no currentJob and no pendingJobs exist, we check if kittingTasks have been finished and marked as finished. If not marked as finished, we send AGV and mark as finished.
     else{
       if (orderJobInterface.pendingJobs.size() == 0){
         for (auto kT : kittingTasks){
@@ -845,6 +1134,9 @@ void TaskManager::jobAllocator(){
             kT.setFinished(true);
           }
         }
+      }
+      else{
+
       }
     }
 
@@ -858,7 +1150,7 @@ void TaskManager::jobAllocator(){
           for (std::vector<job>::iterator i = orderJobInterface.pendingJobs.begin(); i!=orderJobInterface.pendingJobs.end(); i++){
             if (i->getRobot() == robot){
               job j(i->getPart(), i->getFinalPose(), 
-                i->getTypeID(), _nh, pickupStaticObjectClient, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
+                i->getTypeID(), _nh, kittingPickUpStaticObjectClient, enumClass::ROBOT::kitting, enumClass::TASK::pick_and_place);
               orderJobInterface.currentJobs.push_back(j);
               // std::cout << "EEEF " << orderJobInterface.pendingJobs.erase(i)->getPart().type << std::endl;
               std::cout << orderJobInterface.currentJobs[0].getPartType() << " @ " << orderJobInterface.pendingJobs[0].getPartType() << std::endl;
@@ -872,7 +1164,7 @@ void TaskManager::jobAllocator(){
           // orderJobInterface.currentJobs.push_back( newCurrentJob );
         }
       }
-    }
+    }*/
 
     // if (kittingTasks.size() > 0){
     //   if (orderJobInterface.currentJobs.size() == 0 && orderJobInterface.pendingJobs.size() == 0 && orderJobInterface.highPriorityJobs.size() == 0){
@@ -896,9 +1188,9 @@ void TaskManager::jobAllocator(){
 // }
 
 /*void TaskManager::samplePickAndPlace(){
-    // pickupStaticObjectClient
+    // kittingPickUpStaticObjectClient
     std::cout << "Sample pick and place fn called" << std::endl;
-    ariac_2021_submission::pickupStaticObjectGoal goal;
+    ariac_2021_submission::kittingPickUpStaticObjectGoal goal;
     if (kittingTasks.size() > 0)
       availablePartsManagerInstance.updateKittableParts(kittingTasks[0].getRequiredProductTypes());
     availablePart a = availablePartsManagerInstance.getAvailableParts()[0];
@@ -917,36 +1209,232 @@ void TaskManager::jobAllocator(){
     if (kittingTasks.size() > 0){
 
     }
-    pickupStaticObjectClient->sendGoal(goal);
-    pickupStaticObjectClient->waitForResult();
-    // while (!pickupStaticObjectClient->getResult()->success){
+    kittingPickUpStaticObjectClient->sendGoal(goal);
+    kittingPickUpStaticObjectClient->waitForResult();
+    // while (!kittingPickUpStaticObjectClient->getResult()->success){
     //   continue;
     // }
-    std::cout << "Server side returned success = " << pickupStaticObjectClient->getResult()->success << std::endl;
-    if (pickupStaticObjectClient->getResult()->success)
+    std::cout << "Server side returned success = " << kittingPickUpStaticObjectClient->getResult()->success << std::endl;
+    if (kittingPickUpStaticObjectClient->getResult()->success)
       std::cout << "YAYYYYY" << std::endl;
 }*/
 
-/*void TaskManager::sppActiveCb(){
+void TaskManager::sampleGantryPickAndPlace(){
+    std::cout << "Sample gantry pick and place fn called" << std::endl;
+    ariac_2021_submission::kittingPickUpStaticObjectGoal goal;
+    while (availablePartsManagerInstance.getAvailableParts().size() == 0){
+      // std::cout << "Waiting for conveyor parts!" << std::endl;
+      ros::spinOnce();
+      ros::Duration(0.5).sleep();
+    }
+    gantryPickUpStaticObjectClient->waitForServer();
+    availablePart a = availablePartsManagerInstance.getAvailableParts()[0];
+    goal.ID = a.type_id;
+    goal.initial_pose = a.pose.pose;
+    goal.final_pose = getEmptyBinLocation(enumClass::ROBOT::kitting);
+    
+    gantryPickUpStaticObjectClient->sendGoal(goal);
+    gantryPickUpStaticObjectClient->waitForResult();
+    // while (!kittingPickUpStaticObjectClient->getResult()->success){
+    //   continue;
+    // }
+    std::cout << "Server side returned success = " << gantryPickUpStaticObjectClient->getResult()->success << std::endl;
+    if (gantryPickUpStaticObjectClient->getResult()->success)
+      std::cout << "YAYYYYY" << std::endl;
+}
+
+void TaskManager::sampleConveyorPickAndPlace(){
+    std::cout << "Sample conveyor pick and place fn called" << std::endl;
+    ariac_2021_submission::kittingPickUpConveyorObjectGoal goal;
+    // if (kittingTasks.size() > 0)
+    //   availablePartsManagerInstance.updateKittableParts(kittingTasks[0].getRequiredProductTypes());
+    // availablePart a = availablePartsManagerInstance.getAvailableParts()[0];
+    // while (availablePartsManagerInstance.getAvailableParts().size() == 0){
+    //   std::cout << "No parts available yet" << std::endl;
+    // }
+    // std::cout << "New part found! Picking and placing it!" << std::endl;
+    // if (availablePartsManagerInstance.getAvailableParts().size() > 0)
+    //   a = availablePartsManagerInstance.getAvailableParts()[0];
+    // else
+    //   ROS_ERROR_STREAM("No available parts to pick and place!");
+    while (availablePartsManagerInstance.getConveyorParts().size() == 0){
+      // std::cout << "Waiting for conveyor parts!" << std::endl;
+      ros::spinOnce();
+      ros::Duration(0.5).sleep();
+    }
+    availablePartsManagerInstance.logInfo();
+    availablePart part = availablePartsManagerInstance.getConveyorParts()[0];
+    availablePartsManagerInstance.updateTransforms();
+    goal.ID = part.type_id;
+    for (auto it : objectHeights){
+      if (part.type.find(it.first) != std::string::npos){
+        goal.objectHeight = it.second;
+        break;
+      }
+    }
+    goal.initial_pose = part.pose.pose;
+    goal.lastPoseUpdateTime = part.lastPoseUpdateTime;
+    goal.final_pose = getEmptyBinLocation(enumClass::ROBOT::kitting);  // or kitting blah blah.
+    
+    kittingPickUpConveyorObjectClient->sendGoal(goal);
+    std::cout << "GOAL SENT! WAITING FOR RESULT!" << std::endl;
+    kittingPickUpConveyorObjectClient->waitForResult();
+    // while (!kittingPickUpStaticObjectClient->getResult()->success){
+    //   continue;
+    // }
+    bool success = kittingPickUpConveyorObjectClient->getResult()->success;
+    // part.pose.pose = goal.final_pose;    // INSTEAD, it must be better to trigger the appropriate logical cameras and get the exact finalPose
+    // availablePartsManagerInstance.conveyorToAvailablePart(part.type_id);
+    availablePartsManagerInstance.eraseConveyorPart(part.type_id);
+    std::cout << "Server side returned success = " << success << std::endl;
+    if (success)
+      std::cout << "YAYYYYY" << std::endl;
+}
+
+void TaskManager::sampleInspectionAssembly(){
+    std::cout << "sampleInspectionAssembly called!" << std::endl;
+    // inspectionAssemblyClient
+    if (kittingTasks.size()==0 && assemblyTasks.size()>0){  // only inspection assem is possible
+      ariac_2021_submission::inspectionAssemblyGoal goal;
+      for (auto it : assemblyTasks){
+        goal.station_id = it.station_id;
+        std::vector<assemblyProduct> prod = it.getRequiredAssemblyProducts();
+        for (auto j : prod)
+          goal.req_products.push_back(j.product);
+        inspectionAssemblyClient->sendGoal(goal);
+        inspectionAssemblyClient->waitForResult();
+      }
+    }
+}
+
+void TaskManager::kittingSPPActiveCb(){
     std::cout << "Goal has been sent!" << std::endl;
 }
 
-void TaskManager::sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
-    std::cout << "FEEDBACK RECEIVEDDDDDDDD!" << std::endl;
+void TaskManager::kittingSPPFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback){
+    if (feedback->feedback == feedback->GRIPPER_FAULT)
+      std::cout << "Gripper failed while performing current spp!" << std::endl;
 }
 
-void TaskManager::sppDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
-    std::cout << "FJT finished with state : " << state.toString().c_str() << std::endl;
-    if (result->success)
+void TaskManager::kittingSPPDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result){
+    std::cout << "kitting SPP finished with state : " << state.toString().c_str() << std::endl;
+    if (result->success){
       std::cout << "YESSSS. SUCCESSSSSS!" << std::endl;
-}*/
+      kittingRobotInAction = false;
+    }
+}
 
-void TaskManager::job::sppActActiveCb(){
+void TaskManager::gantrySPPActiveCb(){
+    std::cout << "Goal has been sent!" << std::endl;
+}
+
+void TaskManager::gantrySPPFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback){
+    if (feedback->feedback == feedback->GRIPPER_FAULT)
+      std::cout << "Gripper failed while performing current spp!" << std::endl;
+}
+
+void TaskManager::gantrySPPDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result){
+    std::cout << "gantry SPP finished with state : " << state.toString().c_str() << std::endl;
+    if (result->success){
+      std::cout << "YESSSS. SUCCESSSSSS!" << std::endl;
+      gantryRobotInAction = false;
+    }
+}
+
+void TaskManager::kittingConvActiveCb(){
+    std::cout << "Goal has been sent!" << std::endl;
+}
+
+void TaskManager::kittingConvFeedbackCb(const ariac_2021_submission::kittingPickUpConveyorObjectFeedbackConstPtr& feedback){
+    if (feedback->feedback == feedback->GRIPPER_FAULT)
+      std::cout << "Gripper failed while performing current spp!" << std::endl;
+}
+
+void TaskManager::kittingConvDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpConveyorObjectResultConstPtr& result){
+    std::cout << "kitting Conv finished with state : " << state.toString().c_str() << std::endl;
+    if (result->success){
+      std::cout << "YESSSS. SUCCESSSSSS!" << std::endl;
+      kittingRobotInAction = false;
+    }
+    availablePartsManagerInstance.eraseConveyorPart(orderJobInterface.currentKittingJob.part.type_id);
+}
+
+void TaskManager::perform(job& currentJob){
+    std::cout << "Perform called!" << std::endl;
+    std::cout << "Passed job's robot is : " << currentJob.robot << std::endl;
+    availablePartsManagerInstance.setInAction(currentJob.part.type_id, true);
+    // currentJob.inAction = true;
+    // pendingJob.part.inAction = true;
+    if (currentJob.task == enumClass::TASK::pick_and_place){
+      if (currentJob.robot == enumClass::ROBOT::kitting){
+        kittingRobotInAction = true;
+        ariac_2021_submission::kittingPickUpStaticObjectGoal goal;
+        goal.ID = currentJob.part.type_id;
+        goal.initial_pose = currentJob.part.pose.pose;
+        goal.final_pose = currentJob.final_pose;
+        std::cout << "Performing kitting p&p. Part type is : " << currentJob.part.type << std::endl;
+        // std::cout << "Trying to connect to server!" << std::endl;
+        kittingPickUpStaticObjectClient->waitForServer();
+        kittingPickUpStaticObjectClient->sendGoal(goal, boost::bind(&TaskManager::kittingSPPDoneCb, this, _1, _2), boost::bind(&TaskManager::kittingSPPActiveCb, this), boost::bind(&TaskManager::kittingSPPFeedbackCb, this, _1));
+        // feedback_sub = job_nh->subscribe("ariac/kitting/pick_and_place_static_action/feedback", 3, &job::sppFeedbackCb, this);
+        // result_sub = job_nh->subscribe("ariac/kitting/pick_and_place_static_action/result", 3, &job::sppResultCb, this);
+        // pickupStaticClient->waitForResult();
+      }
+      if (currentJob.robot == enumClass::ROBOT::gantry){
+        gantryRobotInAction = true;
+        ariac_2021_submission::kittingPickUpStaticObjectGoal goal;
+        goal.ID = currentJob.part.type_id;
+        goal.initial_pose = currentJob.part.pose.pose;
+        goal.final_pose = currentJob.final_pose;
+        std::cout << "Performing gantry p&p. Part type is : " << currentJob.part.type << std::endl;
+        gantryPickUpStaticObjectClient->waitForServer();
+        gantryPickUpStaticObjectClient->sendGoal(goal, boost::bind(&TaskManager::gantrySPPDoneCb, this, _1, _2), boost::bind(&TaskManager::gantrySPPActiveCb, this), boost::bind(&TaskManager::gantrySPPFeedbackCb, this, _1));
+      }
+    }
+
+    else if (currentJob.task == enumClass::TASK::conveyor_pick_and_place_to_empty){
+      if (currentJob.robot == enumClass::ROBOT::kitting){
+        kittingRobotInAction = true;
+        ariac_2021_submission::kittingPickUpConveyorObjectGoal goal;
+        
+        availablePartsManagerInstance.updateTransforms();
+        goal.ID = currentJob.part.type_id;
+        for (auto it : objectHeights){
+          if (currentJob.part.type.find(it.first) != std::string::npos){
+            goal.objectHeight = it.second;
+            break;
+          }
+        }
+        goal.initial_pose = currentJob.part.pose.pose;
+        goal.lastPoseUpdateTime = currentJob.part.lastPoseUpdateTime;
+        goal.final_pose = getEmptyBinLocation(enumClass::ROBOT::kitting);  // or kitting blah blah.
+        // std::vector<availablePart> paaaarts = availablePartsManagerInstance.getConveyorParts();
+        // std::vector<availablePart>::iterator p = std::find_if(paaaarts.begin(), paaaarts.end(), [goal] (availablePart k) { return goal.ID == k.type_id; })
+        
+        // std::cout << "DIFF BTW poses : " << goal.initial_pose.position.y-
+        kittingPickUpConveyorObjectClient->sendGoal(goal, boost::bind(&TaskManager::kittingConvDoneCb, this, _1, _2), boost::bind(&TaskManager::kittingConvActiveCb, this), boost::bind(&TaskManager::kittingConvFeedbackCb, this, _1));
+        std::cout << "CONVEYOR GOAL SENT!" << std::endl;
+        // kittingPickUpConveyorObjectClient->waitForResult();
+        // while (!kittingPickUpStaticObjectClient->getResult()->success){
+        //   continue;
+        // }
+        // bool success = kittingPickUpConveyorObjectClient->getResult()->success;
+        // part.pose.pose = goal.final_pose;    // INSTEAD, it must be better to trigger the appropriate logical cameras and get the exact finalPose
+        // availablePartsManagerInstance.conveyorToAvailablePart(part.type_id);
+        
+        // std::cout << "Server side returned success = " << success << std::endl;
+        // if (success)
+        //   std::cout << "YAYYYYY" << std::endl;
+      }
+    }
+}
+
+/*void TaskManager::job::sppActActiveCb(){
     std::cout << "Goal has been sent!" << std::endl;
     std::cout << "Current part is actually " << part.type << " required? " << part.req_for_kitting << std::endl;
 }
 
-void TaskManager::job::sppActFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
+void TaskManager::job::sppActFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback){
     std::cout << "FEEDBACK RECEIVEDDDDDDDD!" << std::endl;
     if (feedback->feedback == feedback->PROBE_AND_PICK){
       std::cout << "Summa setting to finished and result true : " << std::endl;
@@ -955,7 +1443,7 @@ void TaskManager::job::sppActFeedbackCb(const ariac_2021_submission::pickupStati
     }
 }
 
-void TaskManager::job::sppActDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
+void TaskManager::job::sppActDoneCb(const actionlib::SimpleClientGoalState& state, const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result){
     std::cout << "FJT finished with state : " << state.toString().c_str() << std::endl;
     setResultReceived(true);
     std::cout << "EEHEE : " << gotResult() << std::endl;
@@ -967,7 +1455,7 @@ void TaskManager::job::sppActDoneCb(const actionlib::SimpleClientGoalState& stat
     }
     else
       success = false;
-}
+}*/
 
 bool TaskManager::kittingHighPriorityExists(){
     for (auto i : kittingTasks){
@@ -992,8 +1480,9 @@ bool TaskManager::updateBinTransforms(){
     for(int i=0; i<8; i++) {
       std::string frame = "bin" + std::to_string(i+1) + "_frame";
       try{
-        transformStamped = tfBuffer.lookupTransform(frame, "world",
+        transformStamped = tfBuffer.lookupTransform("world", frame,
                                 ros::Time(0));
+        std::cout << "Bin transform : { " << transformStamped.transform.translation.x << ", " << transformStamped.transform.translation.y << ", " << transformStamped.transform.translation.z << " }" << std::endl;
         bin_transforms[i] = transformStamped;
       }
       catch (tf2::TransformException &ex) {
@@ -1007,26 +1496,89 @@ bool TaskManager::updateBinTransforms(){
 
 int TaskManager::getPartBin(availablePart p){
     // if x-y translations of object wrt bin < 0.3. Get pose of model wrt bin
-    
-    if (updateBinTransforms()){
-      for (std::size_t i=0; i<bin_transforms.size(); i++){
-        if (isPositionDiffLesser(bin_transforms[i].transform.translation,p.pose.pose.position,0.3)) {
-          // std::cout << m.type << " is in Bin : " << i+1 << std::endl;
-          return i+1;
-        }
-        // else
-        //   std::cout << m.type << "is not in Bin : " << i+1 << std::endl;
+    // std::cout << "LIL " << p.pose.pose.position.x << ", " << p.pose.pose.position.y << ", " << p.pose.pose.position.z << std::endl;
+    // if (updateBinTransforms()){
+    for (std::size_t i=0; i<bin_transforms.size(); i++){
+      if (isPositionDiffLesser(bin_transforms[i].transform.translation,p.pose.pose.position,0.3)) {
+        // std::cout << m.type << " is in Bin : " << i+1 << std::endl;
+        return i+1;
       }
-      std::cout << "No bins found?" << std::endl;
-      return 0;
+      // else
+      //   std::cout << m.type << "is not in Bin : " << i+1 << std::endl;
     }
+    std::cout << "No bins found?" << std::endl;
+    return 0;
+    // }
+}
+
+struct two_dim_pt{
+  double x, y;
+  two_dim_pt(double X, double Y) : x(X), y(Y) { }
+};
+
+geometry_msgs::Pose TaskManager::getEmptyBinLocation(enumClass::ROBOT robot){
+  std::cout << "getEmptyBinLocation called!" << std::endl;
+  int bin;
+  std::vector< std::vector<two_dim_pt> > bin_occupancy;
+  double x_min, x_max, y_min, y_max, x, y;
+  bool free_space;
+  double l = 0.12;
+  bin_occupancy.resize(bin_transforms.size());
+  if (robot == enumClass::ROBOT::kitting){
+    int nos[4] = {1, 2, 5, 6};
+    for (auto it : availablePartsManagerInstance.getAvailableParts()){
+      bin = getPartBin(it);
+      if (bin == 1 || bin == 2 || bin == 5 || bin == 6){
+        std::cout << "Occupancy pushback happening in bin : " << bin << std::endl;
+        bin_occupancy[bin-1].push_back(two_dim_pt(it.pose.pose.position.x, it.pose.pose.position.y));
+      }
+    }
+    for (int i = 3; i >= 0; i--){
+    // for (int i=2; i>1; i--){
+      x_min = bin_transforms[nos[i]-1].transform.translation.x - 0.3 + l;
+      y_min = bin_transforms[nos[i]-1].transform.translation.y - 0.3 + l;
+      x_max = bin_transforms[nos[i]-1].transform.translation.x + 0.3 - 0.09;
+      y_max = bin_transforms[nos[i]-1].transform.translation.y + 0.3 - 0.09;
+      for (x = x_min; x <= x_max; x = x+l){
+        for (y = y_min; y <= y_max; y = y+l){
+          if (bin_occupancy[nos[i]-1].size() > 0){    // TO DO : switch on/off logical camera while performing conveyor place, part reshuffling, etc.
+            for (auto pt : bin_occupancy[nos[i]-1]){
+              if ( (abs(x-pt.x) >= l) || (abs(y-pt.y) >= l) )
+                free_space = true;
+              else{
+                free_space = false;
+                std::cout << "DAH! x_diff, y_diff = " << abs(x-pt.x) << ", "  << abs(y-pt.y) << std::endl;
+                break;
+              }
+            }
+          }
+          else{
+            free_space = true;
+            x = x_min;
+            y = y_min;
+          }
+          if (free_space){
+            std::cout << "Yaaah!  x, y, bin = " << x << ", " << y << ", " << nos[i] << std::endl;
+            geometry_msgs::Pose p;
+            p.position.x = x; p.position.y = y; p.position.z = usualFinalZ;
+            p.orientation = quatFromRPY(0, 0, 0);
+            return p;
+          }
+        }
+        std::cout << "Next point y!" << std::endl;
+      }
+      std::cout << "Next point x!" << std::endl;
+    }
+    ROS_ERROR_STREAM("Could not find empty bin location!");
+  }
+
 }
 
 void TaskManager::printStaticTF() {
     geometry_msgs::TransformStamped transformStamped;
     std::cout << "Inside printStaticTF() " << std::endl;
     try{
-      transformStamped = tfBuffer.lookupTransform("bin1_frame", "world",
+      transformStamped = tfBuffer.lookupTransform("world", "bin1_frame",
                                ros::Time(0));
     }
     catch (tf2::TransformException &ex) {
@@ -1079,6 +1631,27 @@ void TaskManager::lc_1_2_timer_callback(const ros::TimerEvent& e) {
 
 }
 
+void TaskManager::lc_1_2_update(enumClass::CAMERA_ACTION action){
+    // if (kittingTasks.size() > 0){
+    if (action == enumClass::ADD_IF_NEW){
+      msg_1_2 = ros::topic::waitForMessage<nist_gear::LogicalCameraImage>("/ariac/logical_camera_1_2");
+      for (std::vector<nist_gear::Model>::const_iterator i = msg_1_2->models.begin(); i!=msg_1_2->models.end(); i++){
+        availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_1_2_frame");
+      }
+      lc_new_count++;
+    }
+}
+
+void TaskManager::lc_3_4_update(enumClass::CAMERA_ACTION action){
+    // if (kittingTasks.size() > 0){
+    if (action == enumClass::ADD_IF_NEW){
+      msg_3_4 = ros::topic::waitForMessage<nist_gear::LogicalCameraImage>("/ariac/logical_camera_3_4");
+      for (std::vector<nist_gear::Model>::const_iterator i = msg_3_4->models.begin(); i!=msg_3_4->models.end(); i++){
+        availablePartsManagerInstance.addPartFromLogicalCamera((*i),"logical_camera_3_4_frame");
+      }
+    }
+}
+
 void TaskManager::lc_3_4_timer_callback(const ros::TimerEvent& e) {
     if (kittingTasks.size() > 0){
       msg_3_4 = ros::topic::waitForMessage<nist_gear::LogicalCameraImage>("/ariac/logical_camera_3_4");
@@ -1107,6 +1680,9 @@ void TaskManager::orderCallback(const nist_gear::OrderConstPtr& orderMsg){
     for (auto it=orderMsg->kitting_shipments.begin(); it!=orderMsg->kitting_shipments.end(); ++it){
       kittingTasks.push_back(kittingTask(*it));
     }
+    for (auto it=orderMsg->assembly_shipments.begin(); it!=orderMsg->assembly_shipments.end(); ++it){
+      assemblyTasks.push_back(assemblyTask(*it));
+    }
     // Need to add for assembly shipments
     std::cout << "Size of kittingTasks is " << kittingTasks.size() << std::endl;
     // std::cout << "Req count before assigning : " << kittingTasks[0].getReqCount() << std::endl;
@@ -1115,7 +1691,18 @@ void TaskManager::orderCallback(const nist_gear::OrderConstPtr& orderMsg){
 
 }
 
-void TaskManager::lcConveyorCallback(const nist_gear::LogicalCameraImageConstPtr& msg){
+void TaskManager::lcConveyorCallback(const nist_gear::LogicalCameraImageConstPtr& msg){   // we assume that there are no more than 1 part in fov per msg
+    // std::cout << "Conveyor parts size : " << availablePartsManagerInstance.getConveyorParts().size() << std::endl;
+    if (msg->models.size() > 0 && !conveyorPartDetected){
+      conveyorPartDetected = true;
+      for (std::vector<nist_gear::Model>::const_iterator i = msg->models.begin(); i!=msg->models.end(); i++){
+        availablePartsManagerInstance.addPartFromLogicalCamera((*i), "logical_camera_conveyor_frame", true);
+      }
+    }
+    else{
+      if (msg->models.size() == 0)
+        conveyorPartDetected = false;
+    }
     // std::cout << "lcConveyor subscriber callback called" << std::endl;
 }
 
@@ -1127,12 +1714,12 @@ void TaskManager::lcConveyorCallback(const nist_gear::LogicalCameraImageConstPtr
 // void TaskManager::lc34Callback(const nist_gear::LogicalCameraImageConstPtr& msg){
 //     // std::cout << "lc34 subscriber callback called" << std::endl;
 // }
-void TaskManager::job::perform(){
+/*void TaskManager::job::perform(){
     std::cout << "Perform called!" << std::endl;
     performCalled = true;
     if (task == enumClass::TASK::pick_and_place){
-      ariac_2021_submission::pickupStaticObjectGoal goal;
-      goal.ID = type_ID;
+      ariac_2021_submission::kittingPickUpStaticObjectGoal goal;
+      goal.ID = part.type_id;
       goal.initial_pose = part.pose.pose;
       goal.final_pose = final_pose;
       std::cout << "Part type is : " << part.type << std::endl;
@@ -1143,13 +1730,13 @@ void TaskManager::job::perform(){
       // result_sub = job_nh->subscribe("ariac/kitting/pick_and_place_static_action/result", 3, &job::sppResultCb, this);
       // pickupStaticClient->waitForResult();
     }
-}
+}*/
 
-/*void TaskManager::job::sppFeedbackCb(const ariac_2021_submission::pickupStaticObjectFeedbackConstPtr& feedback){
+/*void TaskManager::job::sppFeedbackCb(const ariac_2021_submission::kittingPickUpStaticObjectFeedbackConstPtr& feedback){
     std::cout << "FEEDBACK!" << std::endl;
 }
 
-void TaskManager::job::sppResultCb(const ariac_2021_submission::pickupStaticObjectResultConstPtr& result){
+void TaskManager::job::sppResultCb(const ariac_2021_submission::kittingPickUpStaticObjectResultConstPtr& result){
     if (result->success){
       std::cout << "SUCCESS!" << std::endl;
       resultReceived = true;
@@ -1166,7 +1753,7 @@ void TaskManager::job::sppStatusCb(const actionlib::SimpleClientGoalState& state
     // std::cout << "Goal has been sent!" << std::endl;
 }*/
 
-void TaskManager::job::performSpinOnce(){
+/*void TaskManager::job::performSpinOnce(){
     ros::spinOnce();
 }
 
@@ -1184,9 +1771,9 @@ bool TaskManager::jobInterface::areCurrentRobotsInAction(){
     if (isCurrentRobotInAction(enumClass::ROBOT::kitting) && isCurrentRobotInAction(enumClass::ROBOT::assembly))
       return true;
     return false;
-}
+}*/
 
-bool TaskManager::jobInterface::currentJobGotResult(){
+/*bool TaskManager::jobInterface::currentJobGotResult(){
     for (auto i : currentJobs){
       if (i.gotResult()){
         std::cout << "Current got result!" << std::endl;
@@ -1207,50 +1794,83 @@ std::vector<std::string> TaskManager::jobInterface::performCurrentJobs(){    // 
       }
     }
     return ids;
-}
+}*/
 
 void TaskManager::jobInterface::logJobDetails(){
-    std::cout << "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$" << std::endl;
-    std::cout << "currentJobs details : " << std::endl;
-    for (auto& i : currentJobs){
-      std::cout << i.getPartType() << ", " << i.getRobot() << " " << i.gotResult() << std::endl;
-      // i.setResultReceived(true);
-    }
+    std::cout << "----------------------------------------------" << std::endl;
+    // std::cout << "currentJobs details : " << std::endl;
+    // for (auto& i : currentJobs){
+    //   std::cout << i.getPartType() << ", " << i.getRobot() << " " << i.gotResult() << std::endl;
+    //   // i.setResultReceived(true);
+    // }
     std::cout << "pendingJobs details : " << std::endl;
-    for (auto i : pendingJobs){
-      std::cout << i.getPartType() << ", " << i.getRobot() << " " << i.gotResult() << std::endl;
+    for (auto it : pendingJobs){
+      std::cout << it.part.type_id << ", " << it.robot << ", " << it.resultReceived << std::endl;
     }
+    std::cout << "currentKittingJob details : ";
+    if (currentKittingJobAssigned)
+      std::cout << currentKittingJob.part.type_id << ", " << currentKittingJob.robot << ", " << currentKittingJob.resultReceived << std::endl;
+    else
+      std::cout << std::endl;
+    // }
 }
 
-std::vector<enumClass::ROBOT> TaskManager::jobInterface::getRobotsNotInAction(){
+bool TaskManager::jobInterface::currentJobGotResult(){
+    if (currentKittingJob.resultReceived)
+      return true;
+    return false;
+}
+
+/*std::vector<enumClass::ROBOT> TaskManager::jobInterface::getRobotsNotInAction(){
     std::vector<enumClass::ROBOT> robots;
     if (!isCurrentRobotInAction(enumClass::ROBOT::kitting))
       robots.push_back(enumClass::ROBOT::kitting);
     if (!isCurrentRobotInAction(enumClass::ROBOT::assembly))
       robots.push_back(enumClass::ROBOT::assembly);
     return robots;
-}
+}*/
 
 int TaskManager::jobInterface::getPendingJobCountByRobot(enumClass::ROBOT R){
     int count = 0;
     for (auto j : pendingJobs){
-      if (j.getRobot() == R)
+      if (j.robot == R)
         count++;
     }
     return count;
 }
 
+int TaskManager::jobInterface::getConvJobCount(){
+    int count = 0;
+    for (auto j : convJobs){
+      if (j.part.pose.pose.position.y > -4)
+        count++;
+    }
+    std::cout << "Kaaal : " << count << std::endl;
+    return count;
+}
+
+
 TaskManager::job TaskManager::jobInterface::eraseAndGetPendingJobByRobot(enumClass::ROBOT R){
     job j;
     for (std::vector<job>::iterator i = pendingJobs.begin(); i!=pendingJobs.end(); i++)
-      if (i->getRobot() == R){
-        j = job(*i);
+      if (i->robot == R){
+        j = job(i->part, i->final_pose, R);
         pendingJobs.erase(i);
         return j;
       }
 }
 
-void TaskManager::jobInterface::eraseAndAddPendingJobByRobot(enumClass::ROBOT R){
+TaskManager::job TaskManager::jobInterface::eraseAndGetConvJob(){
+    job j;
+    for (std::vector<job>::iterator i = convJobs.begin(); i!=convJobs.end(); i++)
+      if (i->part.pose.pose.position.y > -4){
+        j = job(i->part, i->final_pose, enumClass::ROBOT::kitting, enumClass::conveyor_pick_and_place_to_empty);
+        convJobs.erase(i);
+        return j;
+      }
+}
+
+/*void TaskManager::jobInterface::eraseAndAddPendingJobByRobot(enumClass::ROBOT R){
     for (std::vector<job>::iterator i = pendingJobs.begin(); i!=pendingJobs.end(); i++)
       if (i->getRobot() == R){
         // job j(i->getPart(), i->getFinalPose(), 
@@ -1266,7 +1886,7 @@ void TaskManager::jobInterface::spinCurrentJobs(){
     for (auto i : currentJobs){
       i.performSpinOnce();
     }
-}
+}*/
 
 /* Important frames :
   bin1_frame - bin8_frame
@@ -1275,6 +1895,11 @@ void TaskManager::jobInterface::spinCurrentJobs(){
   kit_tray_1 - kit_tray_4
   logical_camera_1_2_frame
   logical_camera_3_4_frame
-  logical_camera_conveyor_frame */
+  logical_camera_conveyor_frame 
+  quality_control_sensor_1_frame - 4
+  */
+
+
+// TO DO : switch on/off logical camera while performing conveyor place, part reshuffling, etc.
 
   

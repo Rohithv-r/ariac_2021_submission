@@ -4,13 +4,14 @@
             <arg name="rviz_config" value="$(find kitting_moveit_config)/launch/moveit.rviz"/>
         </include>
     </group> -->
-    <!-- <group ns='ariac/kitting'>
-        <node name="kittingRobot" pkg="ariac_2021_submission" type="kittingRobot" output="screen"> -->
+    <!-- <node name="TaskManager" pkg="ariac_2021_submission" type="TaskManager" output="screen" /> -->
+    <group ns='ariac/kitting'>
+        <node name="kittingRobot" pkg="ariac_2021_submission" type="kittingRobot" output="screen">
             <!-- <remap from="joint_states" to="ariac/kitting/joint_states" />
             <remap from="follow_joint_trajectory" to="ariac/kitting/kitting_arm_controller/follow_joint_trajectory" /> -->
             <!-- <remap from="robot_description" to="ariac/kitting/robot_description" /> -->
-        <!-- </node>
-    </group> -->
+        </node>
+    </group>
     <group ns='ariac/gantry'>
         <node name="gantryRobot" pkg="ariac_2021_submission" type="gantryRobot" output="screen">
             <!-- <remap from="joint_states" to="ariac/kitting/joint_states" />

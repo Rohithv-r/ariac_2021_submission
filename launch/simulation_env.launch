@@ -36,10 +36,11 @@
           $(arg load_kitting_moveit_args)
           $(arg fill_demo_shipment_args)
           --visualize-sensor-views
-          -f /home/rohith/comp_config/kitting1.yaml
+          -f /home/rohith/comp_config/qualifiers_practice/qual1.yaml
           $(find ariac_2021_submission)/config/my_gear_conf.yaml
           " required="true" output="screen" />
 
+<!-- -f /home/rohith/comp_config/kitting1.yaml -->
 <!-- find ariac_2021_submission)/config/my_gear_conf.yaml -->
 <!-- find nist_gear)/config/user_config/sample_user_config_misc.yaml -->
   <!-- <group ns='ariac/gantry'>
