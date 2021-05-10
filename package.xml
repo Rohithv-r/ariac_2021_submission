@@ -16,6 +16,12 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>trajectory_msgs</depend>
   <depend>actionlib_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_planning</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_visual_tools</depend>
   <depend>message_generation</depend>
   <depend>message_runtime</depend>
 

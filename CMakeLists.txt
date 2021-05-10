@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   moveit_ros_planning_interface
   moveit_visual_tools
   message_generation
+  message_runtime
   actionlib_msgs
 )
 
