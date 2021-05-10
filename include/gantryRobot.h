@@ -56,6 +56,14 @@ static geometry_msgs::Quaternion quatFromRPY(double roll, double pitch, double y
     return q;
 }
 
+bool isPositionDiffLesser(geometry_msgs::Vector3 t1, geometry_msgs::Point t2, double x_offset, double y_offset, double diff=0.1){
+    if( (abs(t1.x - x_offset - t2.x) < diff) && (abs(t1.y - y_offset - t2.y) < diff) ){
+      return true;
+    }
+    // std::cout << abs(t1.x - t2.x) << ", " << abs(t1.y - t2.y) << std::endl;
+    return false;
+}
+
 struct RPY{
     double R, P, Y;
     RPY(geometry_msgs::Vector3 rpy){
@@ -95,6 +103,7 @@ class gantryRobot{
       torso_move_group_interface = std::make_shared<moveit::planning_interface::MoveGroupInterface>(torso_planning_group_name);
       joint_model_group = arm_move_group_interface->getCurrentState()->getJointModelGroup(arm_planning_group_name);
       next_goal_publisher = _nh->advertise<geometry_msgs::Pose>("next_goal", 3, true);
+      track_kitting_timer = _nh->createTimer(ros::Duration(0.1), &gantryRobot::track_kitting_timer_callback, this);
       // advertisePickAndPlaceAction();
       /*std::cout << "End effector link is : " << move_group_interface->getEndEffectorLink() << std::endl;
       std::cout << "Current joint names in the torso move_group_interface are : ";
@@ -240,6 +249,10 @@ class gantryRobot{
     moveit::planning_interface::MoveGroupInterfacePtr arm_move_group_interface;
     moveit::planning_interface::MoveGroupInterfacePtr torso_move_group_interface;
     moveit::planning_interface::PlanningSceneInterface planning_scene_interface;
+    ros::Timer track_kitting_timer;
+    bool distanceViolated = false;
+    bool stopped = false;
+    void track_kitting_timer_callback(const ros::TimerEvent& e);
     const robot_state::JointModelGroup* joint_model_group;
     moveit_visual_tools::MoveItVisualToolsPtr visual_tools;
     moveit::core::RobotStatePtr current_state;
@@ -295,7 +308,7 @@ class gantryRobot{
     // bool publishToJointPositions(std::vector<double> joint_positions, double time_from_start = 2);  // This is a blocking function!
     bool moveFullToPose(geometry_msgs::Pose target_pose, bool blocking = false);
     bool moveArmToPose(geometry_msgs::Pose target_pose, bool blocking = false);
-    bool moveTorsoToPose(geometry_msgs::Pose target_pose, double x_offset, double y_offset, bool blocking = false);
+    bool moveTorsoToPose(geometry_msgs::Pose target_pose, double x_offset, double y_offset, double yaw, bool blocking = false);
     bool moveToJointPositions(std::vector<double>, moveGroup group, bool blocking = false);
     bool moveTorsoToHomeConfig(bool blocking = false);
     bool moveArmToHomeConfig(bool blocking = false);
@@ -460,12 +473,12 @@ bool gantryRobot::moveFullToPose(geometry_msgs::Pose target_pose, bool blocking)
     return success;
 }
 
-bool gantryRobot::moveTorsoToPose(geometry_msgs::Pose target_pose, double x_offset, double y_offset, bool blocking){
+bool gantryRobot::moveTorsoToPose(geometry_msgs::Pose target_pose, double x_offset, double y_offset, double yaw, bool blocking){
     // std::cout << "Movetopose called!" << std::endl;
     target_pose.position.x += (x_offset + 2);
     target_pose.position.y *= -1;
     target_pose.position.y -= y_offset;
-    bool success = moveToJointPositions(std::vector<double>{target_pose.position.x, target_pose.position.y, rpyFromQuat(target_pose.orientation).z}, moveGroup::TORSO, true);
+    bool success = moveToJointPositions(std::vector<double>{target_pose.position.x, target_pose.position.y, yaw /*rpyFromQuat(target_pose.orientation).z*/}, moveGroup::TORSO, blocking);
     // moveit::planning_interface::MoveGroupInterface::Plan plan;
     // bool success = false;
     // int c = 0;
@@ -545,8 +558,31 @@ bool gantryRobot::PickAndPlace(std::string ID, geometry_msgs::Pose initialPose, 
     pick_as->publishFeedback(feedback);
     // _______std::cout << "Moving towards object!" << std::endl;
     std::cout << "Moving towards object!" << std::endl;
-    success = moveTorsoToPose(initialPose, 0, -0.5, true);
+    double x_offset = 0;
+    double y_offset = -0.5;
+    success = moveTorsoToPose(initialPose, x_offset, y_offset, 0, true);
     next_goal_publisher.publish(initialPose);
+    // while (true){
+    //   if (distanceViolated){
+    //     if (!stopped){
+    //       ROS_ERROR_STREAM("Stopping!");
+    //       torso_move_group_interface->stop();
+    //       stopped = true;
+    //     }
+    //   }
+    //   else if (!stopped){
+    //     if (isPositionDiffLesser(getTransform("torso_base").transform.translation, initialPose.position, x_offset, y_offset, 0.1)){
+    //       std::cout << "Reached!" << std::endl;
+    //       break;
+    //     }
+    //   }
+    //   if (stopped && !distanceViolated){
+    //     success = moveTorsoToPose(initialPose, 0, -0.5, 0, false);
+    //     stopped = false;
+    //   }
+      
+    // }
+    std::cout << "Gantry finished moving to object" << std::endl;
     // pan tilt : 
     // if +ve and object at back, move to pi (back home) and to y simultaneously?
     // if -ve and object at back, move to -pi (back home) and to y simultaneously?
@@ -977,6 +1013,17 @@ void gantryRobot::jointStatesCallback(const sensor_msgs::JointStateConstPtr& joi
       sendEmptyTrajectoryToFJTClient();
       // finishedProbe = true;
     }
+}
+
+void gantryRobot::track_kitting_timer_callback(const ros::TimerEvent& e){
+    geometry_msgs::TransformStamped t = getTransform("torso_base", "base_link");
+    if (abs(t.transform.translation.x) < 1 && abs(t.transform.translation.y) < 1 ){
+      distanceViolated = true;
+    }
+    else
+      distanceViolated = false;
+
+    std::cout << "Diff btw kitting and gantry : ( " << t.transform.translation.x << ", " << t.transform.translation.y << " )" << std::endl; 
 }
 
 bool gantryRobot::addInitialCollisionObjects(){

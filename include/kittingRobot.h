@@ -183,6 +183,8 @@ class kittingRobot{
 
   private:
     ros::NodeHandlePtr _nh;
+    ros::Timer track_gantry_timer;
+    void track_gantry_timer_callback(const ros::TimerEvent& e);
     const std::string planning_group_name = "kitting_arm";
     moveit::planning_interface::MoveGroupInterfacePtr move_group_interface;
     moveit::planning_interface::PlanningSceneInterface planning_scene_interface;
