@@ -15,34 +15,35 @@ sensors:
     pose:
       xyz: [-2.3, -3.0, 1.820000]
       rpy: [0, 1.570796, 'pi']      
-  
-  logical_camera_station1:
-    type: logical_camera
-    pose:
-      xyz: [-7.262095, 2.963994, 2.285697]
-      rpy: [3.141593, 1.570792, 0.000000]
 
-  logical_camera_station2:
-    type: logical_camera
-    pose:
-      xyz: [-12.26217, 2.963994, 2.285697]
-      rpy: [3.141593, 1.570792, 0.000000]
+robot_camera:
+  enable: false
+
+  # logical_camera_station1:
+  #   type: logical_camera
+  #   pose:
+  #     xyz: [-7.262095, 2.963994, 2.285697]
+  #     rpy: [3.141593, 1.570792, 0.000000]
+
+  # logical_camera_station2:
+  #   type: logical_camera
+  #   pose:
+  #     xyz: [-12.26217, 2.963994, 2.285697]
+  #     rpy: [3.141593, 1.570792, 0.000000]
 
  
-  logical_camera_station3:
-    type: logical_camera
-    pose:
-      xyz: [-7.262095, -2.963994, 2.285697]
-      rpy: [3.141593, 1.570792, 0.000000]
+  # logical_camera_station3:
+  #   type: logical_camera
+  #   pose:
+  #     xyz: [-7.262095, -2.963994, 2.285697]
+  #     rpy: [3.141593, 1.570792, 0.000000]
 
-  logical_camera_station4:
-    type: logical_camera
-    pose:
-      xyz: [-12.26217, -2.963994, 2.285697]
-      rpy: [3.141593, 1.570792, 0.000000]      
+  # logical_camera_station4:
+  #   type: logical_camera
+  #   pose:
+  #     xyz: [-12.26217, -2.963994, 2.285697]
+  #     rpy: [3.141593, 1.570792, 0.000000]      
 
-# robot_camera:
-#   enable: true
 
   # break_beam_1:
   #   type: break_beam

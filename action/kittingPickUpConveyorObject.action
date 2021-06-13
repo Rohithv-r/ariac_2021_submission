@@ -1,5 +1,6 @@
 # Goal
 string ID
+string type
 float64 objectHeight
 geometry_msgs/Pose initial_pose
 time lastPoseUpdateTime
@@ -7,7 +8,7 @@ geometry_msgs/Pose final_pose
 ---
 # Result
 bool success
-# uint8 ERROR_CODE
+uint8 ERROR_CODE
 # uint8 GRIPPER_FAULT=6
 # uint8 SUCCESS=7
 ---
@@ -19,3 +20,4 @@ uint8 PROBE_AND_PICK=3
 uint8 MOVE_TO_GOAL=4
 uint8 PLACE=5
 uint8 GRIPPER_FAULT=8
+uint8 OBJECT_CROSSED_REACH_ERROR=9
